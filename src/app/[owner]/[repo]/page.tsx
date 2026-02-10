@@ -7,7 +7,6 @@ import ModelSelectionModal from '@/components/ModelSelectionModal';
 import ThemeToggle from '@/components/theme-toggle';
 import WikiTreeView from '@/components/WikiTreeView';
 import { useLanguage } from '@/contexts/LanguageContext';
-import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
 import { RepoInfo } from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
 import { extractUrlDomain, extractUrlPath } from '@/utils/urlDecoder';
@@ -177,9 +176,6 @@ const createBitbucketHeaders = (bitbucketToken: string): HeadersInit => {
 
 
 export default function RepoWikiPage() {
-  // Auth context for API proxy calls
-  const { token: jwtToken } = useAuth();
-
   // Get route parameters and search params
   const params = useParams();
   const searchParams = useSearchParams();
