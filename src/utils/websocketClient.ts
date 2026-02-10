@@ -4,16 +4,16 @@
  */
 
 // Get the server base URL from environment or use default
-const SERVER_BASE_URL = process.env.SERVER_BASE_URL || 'http://localhost:8001';
+declare const process: { env: Record<string, string | undefined> } | undefined;
+const SERVER_BASE_URL = (typeof process !== 'undefined' ? process?.env?.SERVER_BASE_URL : undefined) || 'http://localhost:8001';
 
 // JWT storage key (must match AuthContext)
 const JWT_STORAGE_KEY = 'deepwiki_jwt';
 
 // Convert HTTP URL to WebSocket URL, appending JWT token
 export const getWebSocketUrl = () => {
-  const baseUrl = SERVER_BASE_URL;
   // Replace http:// with ws:// or https:// with wss://
-  const wsBaseUrl = baseUrl.replace(/^http/, 'ws');
+  const wsBaseUrl = SERVER_BASE_URL.replace(/^http/, 'ws');
   let url = `${wsBaseUrl}/ws/chat`;
 
   // Append JWT token from localStorage if available
