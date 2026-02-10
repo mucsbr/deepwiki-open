@@ -96,6 +96,7 @@ class BatchIndexer:
         self,
         project: dict,
         on_progress: Optional[Callable[[dict], None]] = None,
+        force: bool = False,
     ) -> bool:
         """
         Clone and create embeddings for a single project, then generate wiki cache.
@@ -116,6 +117,16 @@ class BatchIndexer:
             return False
 
         logger.info("Indexing project: %s (id=%d)", path_with_ns, project_id)
+
+        # When force re-indexing, remove old pkl to avoid deserialization errors
+        if force:
+            from api.wiki_generator import _compute_repo_dir_name
+            repo_dir_name = _compute_repo_dir_name(http_url, "gitlab")
+            root_path = os.path.expanduser(os.path.join("~", ".adalflow"))
+            pkl_path = os.path.join(root_path, "databases", f"{repo_dir_name}.pkl")
+            if os.path.exists(pkl_path):
+                logger.info("Force mode: removing old database %s", pkl_path)
+                os.remove(pkl_path)
 
         try:
             db_manager = DatabaseManager()
@@ -291,7 +302,7 @@ class BatchIndexer:
                         **info,
                     })
 
-            success = await self.index_project(project, on_progress=_wiki_progress)
+            success = await self.index_project(project, on_progress=_wiki_progress, force=force)
             if success:
                 indexed += 1
             else:
