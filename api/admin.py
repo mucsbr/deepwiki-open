@@ -172,7 +172,7 @@ async def get_config(_admin: dict = Depends(require_admin)):
 
 @admin_router.get("/groups")
 async def get_groups(_admin: dict = Depends(require_admin)):
-    """Return configured GitLab groups with their name and path."""
+    """Return all GitLab groups visible to the service token."""
     from api.config import GITLAB_SERVICE_TOKEN
 
     if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
@@ -181,21 +181,33 @@ async def get_groups(_admin: dict = Depends(require_admin)):
             detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
         )
 
-    group_ids = _get_configured_group_ids()
-    if not group_ids:
-        return []
-
     results = []
+    page = 1
+    per_page = 100
+
     async with httpx.AsyncClient(verify=False) as client:
-        for gid in group_ids:
+        while True:
             try:
                 resp = await client.get(
-                    f"{GITLAB_URL.rstrip('/')}/api/v4/groups/{gid}",
+                    f"{GITLAB_URL.rstrip('/')}/api/v4/groups",
+                    params={
+                        "per_page": per_page,
+                        "page": page,
+                        "order_by": "name",
+                        "sort": "asc",
+                    },
                     headers={"PRIVATE-TOKEN": GITLAB_SERVICE_TOKEN},
                     timeout=15.0,
                 )
-                if resp.status_code == 200:
-                    data = resp.json()
+                if resp.status_code != 200:
+                    logger.warning("Failed to fetch groups (page %d): %s", page, resp.text)
+                    break
+
+                page_data = resp.json()
+                if not page_data:
+                    break
+
+                for data in page_data:
                     results.append(
                         {
                             "id": data["id"],
@@ -204,10 +216,12 @@ async def get_groups(_admin: dict = Depends(require_admin)):
                             "description": data.get("description", ""),
                         }
                     )
-                else:
-                    logger.warning("Failed to fetch group %d: %s", gid, resp.text)
+                page += 1
+                if page > 50:
+                    break
             except Exception as exc:
-                logger.error("Error fetching group %d: %s", gid, exc)
+                logger.error("Error fetching groups: %s", exc)
+                break
 
     return results
 
@@ -283,17 +297,11 @@ async def trigger_batch_index(
     selected_group_ids = (body.group_ids if body and body.group_ids else None)
     selected_project_ids = (body.project_ids if body and body.project_ids else None)
 
-    # Determine if this is a selective run or full run
-    is_selective = bool(selected_group_ids or selected_project_ids)
-
-    if not is_selective:
-        # Fall back to all configured groups
-        all_group_ids = _get_configured_group_ids()
-        if not all_group_ids:
-            raise HTTPException(
-                status_code=400,
-                detail="No groups selected and GITLAB_BATCH_GROUPS is not configured",
-            )
+    if not selected_group_ids and not selected_project_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="Please select at least one group or project to index",
+        )
 
     # Progress callback
     def on_progress(info: dict) -> None:
@@ -306,24 +314,16 @@ async def trigger_batch_index(
         _batch_status["running"] = True
         _batch_status["progress"] = {"status": "starting"}
         try:
-            if is_selective:
-                indexer = BatchIndexer(
-                    gitlab_url=GITLAB_URL,
-                    service_token=GITLAB_SERVICE_TOKEN,
-                    group_ids=selected_group_ids or [],
-                )
-                result = await indexer.run_selected(
-                    group_ids=selected_group_ids,
-                    project_ids=selected_project_ids,
-                    on_progress=on_progress,
-                )
-            else:
-                indexer = BatchIndexer(
-                    gitlab_url=GITLAB_URL,
-                    service_token=GITLAB_SERVICE_TOKEN,
-                    group_ids=all_group_ids,
-                )
-                result = await indexer.run(on_progress=on_progress)
+            indexer = BatchIndexer(
+                gitlab_url=GITLAB_URL,
+                service_token=GITLAB_SERVICE_TOKEN,
+                group_ids=selected_group_ids or [],
+            )
+            result = await indexer.run_selected(
+                group_ids=selected_group_ids,
+                project_ids=selected_project_ids,
+                on_progress=on_progress,
+            )
             _batch_status["last_result"] = result
             _batch_status["last_run"] = datetime.now(timezone.utc).isoformat()
         except Exception as exc:
