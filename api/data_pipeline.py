@@ -124,11 +124,14 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
         # Clone the repository
         logger.info(f"Cloning repository from {repo_url} to {local_path}")
         # We use repo_url in the log to avoid exposing the token in logs
+        env = os.environ.copy()
+        env["GIT_SSL_NO_VERIFY"] = "true"
         result = subprocess.run(
             ["git", "clone", "--depth=1", "--single-branch", clone_url, local_path],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=env,
         )
 
         logger.info("Repository cloned successfully")
