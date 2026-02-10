@@ -1355,10 +1355,12 @@ IMPORTANT:
           .map((item: { type: string; path: string }) => item.path)
           .join('\n');
 
-          // Step 4: Try to fetch README.md content
-          const readmeUrl = `${projectInfoUrl}/repository/files/README.md/raw`;
+          // Step 4: Try to fetch README.md content via backend proxy
             try {
-            const readmeResponse = await fetch(readmeUrl, { headers });
+            const readmeResponse = await fetch(
+              `/api/gitlab/file_raw?project_path=${encodeURIComponent(projectPath)}&file_path=README.md&ref=${defaultBranchLocal}`,
+              { headers: proxyHeaders }
+            );
               if (readmeResponse.ok) {
                 readmeContent = await readmeResponse.text();
                 console.log('Successfully fetched GitLab README.md');

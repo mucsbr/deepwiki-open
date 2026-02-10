@@ -505,6 +505,31 @@ async def gitlab_repository_tree(
     return resp.json()
 
 
+@app.get("/api/gitlab/file_raw")
+async def gitlab_file_raw(
+    project_path: str = Query(..., description="GitLab project path"),
+    file_path: str = Query(..., description="File path within the repository"),
+    ref: str = Query("main", description="Branch or tag"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Proxy: fetch raw file content from GitLab using the user's OAuth token."""
+    gitlab_token = current_user.get("gitlab_access_token", "")
+    encoded_project = quote(project_path, safe="")
+    encoded_file = quote(file_path, safe="")
+    url = f"{GITLAB_URL}/api/v4/projects/{encoded_project}/repository/files/{encoded_file}/raw"
+
+    async with httpx.AsyncClient(verify=False) as client:
+        resp = await client.get(
+            url,
+            params={"ref": ref},
+            headers={"Authorization": f"Bearer {gitlab_token}"},
+            timeout=15.0,
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return Response(content=resp.content, media_type=resp.headers.get("content-type", "text/plain"))
+
+
 # --- Wiki Cache API Endpoints ---
 
 @app.get("/api/projects")
