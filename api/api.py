@@ -145,7 +145,6 @@ from api.config import configs
 from api.gitlab_auth import router as gitlab_auth_router, get_current_user
 from api.gitlab_permission import (
     verify_repo_permission,
-    get_user_accessible_projects,
     check_repo_access,
 )
 from api.config import GITLAB_URL
@@ -459,32 +458,37 @@ async def save_wiki_cache(data: WikiCacheRequest) -> bool:
 @app.get("/api/projects")
 async def list_accessible_projects(current_user: dict = Depends(get_current_user)):
     """
-    Return the intersection of: projects the user has access to on GitLab
-    AND projects that have been indexed (vectorized).
+    Return indexed projects that the current user has access to on GitLab.
+
+    Iterates over all indexed projects and checks each one against the user's
+    GitLab permissions (results are cached by gitlab_permission module).
     """
     gitlab_token = current_user.get("gitlab_access_token", "")
+    user_id = current_user.get("gitlab_user_id")
 
-    # Get user's accessible projects from GitLab
-    user_projects = await get_user_accessible_projects(gitlab_token, GITLAB_URL)
-
-    # Get indexed projects from metadata store
+    # Get all indexed projects from metadata store
     indexed_projects = get_all_indexed_projects()
-    indexed_paths = set(indexed_projects.keys())
 
-    # Intersect: only return projects that are both accessible and indexed
+    # Check access for each indexed project
     result = []
-    for project in user_projects:
-        path = project.get("path_with_namespace", "")
-        if path in indexed_paths:
-            meta = indexed_projects[path]
+    for path, meta in indexed_projects.items():
+        if meta.get("status") != "indexed":
+            continue
+        has_access = await check_repo_access(
+            gitlab_token=gitlab_token,
+            project_path=path,
+            gitlab_url=GITLAB_URL,
+            user_id=user_id,
+        )
+        if has_access:
             result.append({
-                "id": project.get("id"),
-                "name": project.get("name", ""),
+                "id": meta.get("project_id"),
+                "name": path.split("/")[-1],
                 "path_with_namespace": path,
-                "description": project.get("description", ""),
-                "last_activity_at": project.get("last_activity_at", ""),
-                "web_url": project.get("web_url", ""),
-                "avatar_url": project.get("avatar_url", ""),
+                "description": "",
+                "last_activity_at": meta.get("last_activity_at", ""),
+                "web_url": f"{GITLAB_URL}/{path}" if GITLAB_URL else "",
+                "avatar_url": "",
                 "indexed_at": meta.get("indexed_at", ""),
                 "index_status": meta.get("status", "unknown"),
             })

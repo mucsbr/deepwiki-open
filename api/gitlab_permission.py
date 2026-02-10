@@ -122,7 +122,11 @@ async def get_user_accessible_projects(
             try:
                 resp = await client.get(
                     f"{gitlab_url}/api/v4/projects",
-                    params={"membership": "true", "per_page": per_page, "page": page},
+                    params={
+                        "min_access_level": 10,
+                        "per_page": per_page,
+                        "page": page,
+                    },
                     headers={"PRIVATE-TOKEN": gitlab_token},
                     timeout=30.0,
                 )

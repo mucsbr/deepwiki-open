@@ -51,6 +51,7 @@ _batch_status: dict = {
 class BatchIndexRequest(BaseModel):
     group_ids: Optional[List[int]] = None
     project_ids: Optional[List[int]] = None
+    force: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +270,64 @@ async def get_group_projects(
 
 
 # ---------------------------------------------------------------------------
+# Project search endpoint
+# ---------------------------------------------------------------------------
+
+
+@admin_router.get("/projects/search")
+async def search_projects(
+    q: str = "",
+    _admin: dict = Depends(require_admin),
+):
+    """Search GitLab projects visible to the service token."""
+    from api.config import GITLAB_SERVICE_TOKEN
+
+    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
+        )
+
+    if not q.strip():
+        return []
+
+    results = []
+    async with httpx.AsyncClient(verify=False) as client:
+        try:
+            resp = await client.get(
+                f"{GITLAB_URL.rstrip('/')}/api/v4/projects",
+                params={
+                    "search": q.strip(),
+                    "per_page": 50,
+                    "page": 1,
+                    "order_by": "name",
+                    "sort": "asc",
+                },
+                headers={"PRIVATE-TOKEN": GITLAB_SERVICE_TOKEN},
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                for data in resp.json():
+                    path = data.get("path_with_namespace", "")
+                    meta = get_project_metadata(path)
+                    results.append(
+                        {
+                            "id": data["id"],
+                            "name": data.get("name", ""),
+                            "path_with_namespace": path,
+                            "last_activity_at": data.get("last_activity_at", ""),
+                            "is_indexed": meta is not None
+                            and meta.get("status") == "indexed",
+                            "index_status": meta.get("status") if meta else None,
+                        }
+                    )
+        except Exception as exc:
+            logger.error("Error searching projects: %s", exc)
+
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Batch index endpoints
 # ---------------------------------------------------------------------------
 
@@ -296,6 +355,7 @@ async def trigger_batch_index(
 
     selected_group_ids = (body.group_ids if body and body.group_ids else None)
     selected_project_ids = (body.project_ids if body and body.project_ids else None)
+    force = body.force if body else False
 
     if not selected_group_ids and not selected_project_ids:
         raise HTTPException(
@@ -323,6 +383,7 @@ async def trigger_batch_index(
                 group_ids=selected_group_ids,
                 project_ids=selected_project_ids,
                 on_progress=on_progress,
+                force=force,
             )
             _batch_status["last_result"] = result
             _batch_status["last_run"] = datetime.now(timezone.utc).isoformat()

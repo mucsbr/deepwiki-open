@@ -169,6 +169,7 @@ class BatchIndexer:
         group_ids: Optional[List[int]] = None,
         project_ids: Optional[List[int]] = None,
         on_progress: Optional[Callable[[dict], None]] = None,
+        force: bool = False,
     ) -> dict:
         """
         Index only selected groups and/or individual projects.
@@ -177,6 +178,7 @@ class BatchIndexer:
             group_ids: Groups whose projects should be fully indexed.
             project_ids: Individual project IDs to index.
             on_progress: Optional progress callback.
+            force: If True, skip the should_reindex check and always re-index.
 
         Returns a summary dict with counts.
         """
@@ -214,7 +216,7 @@ class BatchIndexer:
             current += 1
             path = project.get("path_with_namespace", "unknown")
 
-            if not self.should_reindex(project):
+            if not force and not self.should_reindex(project):
                 logger.info("Skipping (up-to-date): %s", path)
                 skipped += 1
                 if on_progress:

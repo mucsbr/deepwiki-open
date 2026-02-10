@@ -103,6 +103,12 @@ export default function AdminPage() {
   const [loadingGroups, setLoadingGroups] = useState<Set<number>>(new Set());
   const [selectedGroups, setSelectedGroups] = useState<Set<number>>(new Set());
   const [selectedProjects, setSelectedProjects] = useState<Set<number>>(new Set());
+  const [forceReindex, setForceReindex] = useState(false);
+
+  // Project search states
+  const [projectSearch, setProjectSearch] = useState('');
+  const [searchResults, setSearchResults] = useState<GroupProject[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
 
   // ---------------------------------------------------------------------------
   // Data fetching
@@ -171,6 +177,27 @@ export default function AdminPage() {
   // ---------------------------------------------------------------------------
   // Group / project selection logic
   // ---------------------------------------------------------------------------
+
+  const handleProjectSearch = useCallback(async () => {
+    if (!projectSearch.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    setSearchLoading(true);
+    try {
+      const res = await fetch(
+        `/api/admin/projects/search?q=${encodeURIComponent(projectSearch.trim())}`,
+        { headers }
+      );
+      if (res.ok) {
+        setSearchResults(await res.json());
+      }
+    } catch (err) {
+      console.error('Project search error:', err);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [projectSearch, headers]);
 
   const toggleGroupExpand = async (groupId: number) => {
     const next = new Set(expandedGroups);
@@ -270,9 +297,10 @@ export default function AdminPage() {
       (pid) => !projectsInSelectedGroups.has(pid)
     );
 
-    const body: { group_ids?: number[]; project_ids?: number[] } = {};
+    const body: { group_ids?: number[]; project_ids?: number[]; force?: boolean } = {};
     if (groupIdsToIndex.length > 0) body.group_ids = groupIdsToIndex;
     if (individualProjectIds.length > 0) body.project_ids = individualProjectIds;
+    if (forceReindex) body.force = true;
 
     try {
       const res = await fetch('/api/admin/batch-index', {
@@ -471,6 +499,59 @@ export default function AdminPage() {
         <section className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-6">
           <h2 className="text-lg font-bold text-[var(--foreground)] mb-4">Batch Indexing</h2>
 
+          {/* Project search */}
+          <div className="mb-4">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="relative flex-1">
+                <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
+                <input
+                  type="text"
+                  value={projectSearch}
+                  onChange={(e) => setProjectSearch(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleProjectSearch()}
+                  placeholder="Search projects by name (press Enter)..."
+                  className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                />
+              </div>
+              <button
+                onClick={handleProjectSearch}
+                disabled={searchLoading || !projectSearch.trim()}
+                className="px-3 py-1.5 text-sm rounded-md bg-[var(--accent-primary)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {searchLoading ? 'Searching...' : 'Search'}
+              </button>
+            </div>
+            {searchResults.length > 0 && (
+              <div className="border border-[var(--border-color)] rounded-md p-2 mb-2 max-h-48 overflow-y-auto">
+                <p className="text-xs text-[var(--muted)] mb-1">
+                  Found {searchResults.length} projects — check to add to index selection
+                </p>
+                {searchResults.map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--accent-primary)]/5"
+                  >
+                    <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={selectedProjects.has(p.id)}
+                        onChange={() => {
+                          const next = new Set(selectedProjects);
+                          if (next.has(p.id)) next.delete(p.id);
+                          else next.add(p.id);
+                          setSelectedProjects(next);
+                        }}
+                        className="accent-[var(--accent-primary)]"
+                      />
+                      <span className="text-sm text-[var(--foreground)]">{p.path_with_namespace}</span>
+                    </label>
+                    <IndexStatusBadge status={p.index_status} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Group list */}
           {groups.length === 0 ? (
             <p className="text-sm text-[var(--muted)]">No groups configured (set GITLAB_BATCH_GROUPS).</p>
@@ -564,6 +645,17 @@ export default function AdminPage() {
                   ? `Index Selected (${selectedCount})`
                   : 'Select projects to index'}
             </button>
+
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={forceReindex}
+                onChange={(e) => setForceReindex(e.target.checked)}
+                className="accent-[var(--accent-primary)]"
+              />
+              <span className="text-sm text-[var(--foreground)]">Force Re-index</span>
+              <span className="text-xs text-[var(--muted)]">(ignore cache, re-index all selected)</span>
+            </label>
 
             {stats?.last_batch_run && (
               <span className="text-sm text-[var(--muted)]">
