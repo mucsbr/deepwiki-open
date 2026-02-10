@@ -1,0 +1,522 @@
+"""
+Wiki Generator Module
+
+Generates wiki cache (structure + page content) for a repository by calling
+LLM, so that users can load the wiki instantly without waiting for generation.
+
+Used by BatchIndexer after embedding creation to pre-generate wiki content.
+"""
+
+import asyncio
+import json
+import logging
+import os
+import re
+import xml.etree.ElementTree as ET
+from typing import Callable, Dict, List, Optional
+from urllib.parse import urlparse
+
+import google.generativeai as genai
+from adalflow.components.model_client.ollama_client import OllamaClient
+from adalflow.core.types import ModelType
+
+from api.bedrock_client import BedrockClient
+from api.config import configs, get_model_config
+from api.azureai_client import AzureAIClient
+from api.dashscope_client import DashscopeClient
+from api.openai_client import OpenAIClient
+from api.openrouter_client import OpenRouterClient
+
+from api.logging_config import setup_logging
+
+setup_logging()
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+ADALFLOW_ROOT = os.path.expanduser(os.path.join("~", ".adalflow"))
+WIKI_CACHE_DIR = os.path.join(ADALFLOW_ROOT, "wikicache")
+
+# Language display names (same mapping used in the frontend)
+LANGUAGE_NAMES = {
+    "en": "English",
+    "ja": "Japanese (日本語)",
+    "zh": "Mandarin Chinese (中文)",
+    "zh-tw": "Traditional Chinese (繁體中文)",
+    "es": "Spanish (Español)",
+    "kr": "Korean (한국어)",
+    "vi": "Vietnamese (Tiếng Việt)",
+    "pt-br": "Brazilian Portuguese (Português Brasileiro)",
+    "fr": "Français (French)",
+    "ru": "Русский (Russian)",
+}
+
+# Directories / files to skip when building the file tree
+_SKIP_DIRS = {
+    ".git", ".svn", ".hg", "__pycache__", "node_modules", ".venv",
+    "venv", "env", ".idea", ".vscode", "dist", "build", ".tox",
+}
+
+
+# ---------------------------------------------------------------------------
+# Prompt templates
+# ---------------------------------------------------------------------------
+
+def _wiki_structure_prompt(owner: str, repo: str, file_tree: str, readme: str, language: str) -> str:
+    lang_name = LANGUAGE_NAMES.get(language, "English")
+    return f"""Analyze this repository {owner}/{repo} and create a wiki structure for it.
+
+1. The complete file tree of the project:
+<file_tree>
+{file_tree}
+</file_tree>
+
+2. The README file of the project:
+<readme>
+{readme}
+</readme>
+
+I want to create a wiki for this repository. Determine the most logical structure for a wiki based on the repository's content.
+
+IMPORTANT: The wiki content will be generated in {lang_name} language.
+
+When designing the wiki structure, include pages that would benefit from visual diagrams, such as:
+- Architecture overviews
+- Data flow descriptions
+- Component relationships
+- Process workflows
+- State machines
+- Class hierarchies
+
+Return your analysis in the following XML format:
+
+<wiki_structure>
+  <title>[Overall title for the wiki]</title>
+  <description>[Brief description of the repository]</description>
+  <pages>
+    <page id="page-1">
+      <title>[Page title]</title>
+      <description>[Brief description of what this page will cover]</description>
+      <importance>high|medium|low</importance>
+      <relevant_files>
+        <file_path>[Path to a relevant file]</file_path>
+      </relevant_files>
+      <related_pages>
+        <related>page-2</related>
+      </related_pages>
+    </page>
+  </pages>
+</wiki_structure>
+
+IMPORTANT FORMATTING INSTRUCTIONS:
+- Return ONLY the valid XML structure specified above
+- DO NOT wrap the XML in markdown code blocks (no ``` or ```xml)
+- DO NOT include any explanation text before or after the XML
+- Ensure the XML is properly formatted and valid
+- Start directly with <wiki_structure> and end with </wiki_structure>
+
+IMPORTANT:
+1. Create 4-6 pages that would make a concise wiki for this repository
+2. Each page should focus on a specific aspect of the codebase (e.g., architecture, key features, setup)
+3. The relevant_files should be actual files from the repository that would be used to generate that page
+4. Return ONLY valid XML with the structure specified above, with no markdown code block delimiters"""
+
+
+def _page_content_prompt(page_title: str, file_paths: List[str], language: str) -> str:
+    lang_name = LANGUAGE_NAMES.get(language, "English")
+    file_list = "\n".join(f"- {p}" for p in file_paths)
+    return f"""You are an expert technical writer and software architect.
+Your task is to generate a comprehensive and accurate technical wiki page in Markdown format about a specific feature, system, or module within a given software project.
+
+You will be given:
+1. The "[WIKI_PAGE_TOPIC]" for the page you need to create.
+2. A list of "[RELEVANT_SOURCE_FILES]" from the project that you MUST use as the sole basis for the content. You have access to the full content of these files. You MUST use AT LEAST 5 relevant source files for comprehensive coverage - if fewer are provided, search for additional related files in the codebase.
+
+CRITICAL STARTING INSTRUCTION:
+The very first thing on the page MUST be a `<details>` block listing ALL the `[RELEVANT_SOURCE_FILES]` you used to generate the content. There MUST be AT LEAST 5 source files listed - if fewer were provided, you MUST find additional related files to include.
+Format it exactly like this:
+<details>
+<summary>Relevant source files</summary>
+
+The following files were used as context for generating this wiki page:
+
+{file_list}
+</details>
+
+Immediately after the `<details>` block, the main title of the page should be a H1 Markdown heading: `# {page_title}`.
+
+Based ONLY on the content of the `[RELEVANT_SOURCE_FILES]`:
+
+1.  **Introduction:** Start with a concise introduction (1-2 paragraphs) explaining the purpose, scope, and high-level overview of "{page_title}" within the context of the overall project.
+
+2.  **Detailed Sections:** Break down "{page_title}" into logical sections using H2 (`##`) and H3 (`###`) Markdown headings.
+
+3.  **Mermaid Diagrams:**
+    *   EXTENSIVELY use Mermaid diagrams to visually represent architectures, flows, relationships.
+    *   CRITICAL: All diagrams MUST follow strict vertical orientation:
+       - Use "graph TD" (top-down) directive for flow diagrams
+       - NEVER use "graph LR" (left-right)
+
+4.  **Tables:**
+    *   Use Markdown tables to summarize information.
+
+5.  **Code Snippets (ENTIRELY OPTIONAL):**
+    *   Include short, relevant code snippets directly from the source files.
+
+6.  **Source Citations (EXTREMELY IMPORTANT):**
+    *   For EVERY piece of significant information, cite the specific source file(s).
+    *   Use the exact format: `Sources: [filename.ext:start_line-end_line]()`
+
+7.  **Technical Accuracy:** All information must be derived SOLELY from the `[RELEVANT_SOURCE_FILES]`.
+
+8.  **Clarity and Conciseness:** Use clear, professional, and concise technical language.
+
+IMPORTANT: Generate the content in {lang_name} language.
+
+Remember:
+- Ground every claim in the provided source files.
+- Prioritize accuracy and direct representation of the code's functionality and structure.
+- Structure the document logically for easy understanding by other developers.
+"""
+
+
+# ---------------------------------------------------------------------------
+# LLM call helper
+# ---------------------------------------------------------------------------
+
+async def _call_llm(provider: str, model: str, prompt: str) -> str:
+    """Call an LLM and return the full text response (non-streaming)."""
+
+    config = get_model_config(provider, model)
+    model_kwargs_cfg = config["model_kwargs"]
+
+    if provider == "google":
+        genai_model = genai.GenerativeModel(
+            model_name=model_kwargs_cfg["model"],
+            generation_config={
+                "temperature": model_kwargs_cfg.get("temperature", 0.7),
+                "top_p": model_kwargs_cfg.get("top_p", 0.8),
+                "top_k": model_kwargs_cfg.get("top_k", 40),
+            },
+        )
+        response = genai_model.generate_content(prompt)
+        return response.text
+
+    if provider == "ollama":
+        client = OllamaClient()
+        kwargs = {
+            "model": model_kwargs_cfg["model"],
+            "stream": False,
+            "options": {
+                k: model_kwargs_cfg[k]
+                for k in ("temperature", "top_p", "num_ctx")
+                if k in model_kwargs_cfg
+            },
+        }
+        api_kwargs = client.convert_inputs_to_api_kwargs(
+            input=prompt, model_kwargs=kwargs, model_type=ModelType.LLM,
+        )
+        response = await client.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+        # Ollama non-streaming returns a single response object
+        if isinstance(response, str):
+            return response
+        msg = getattr(response, "message", None)
+        if msg:
+            return msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", str(msg))
+        return str(response)
+
+    if provider == "bedrock":
+        client = BedrockClient()
+        kwargs = {"model": model_kwargs_cfg["model"]}
+        for k in ("temperature", "top_p"):
+            if k in model_kwargs_cfg:
+                kwargs[k] = model_kwargs_cfg[k]
+        api_kwargs = client.convert_inputs_to_api_kwargs(
+            input=prompt, model_kwargs=kwargs, model_type=ModelType.LLM,
+        )
+        response = await client.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+        return response if isinstance(response, str) else str(response)
+
+    # OpenAI-compatible providers: openai, openrouter, azure, dashscope
+    client_map = {
+        "openai": OpenAIClient,
+        "openrouter": OpenRouterClient,
+        "azure": AzureAIClient,
+        "dashscope": DashscopeClient,
+    }
+    client_cls = client_map.get(provider)
+    if client_cls is None:
+        raise ValueError(f"Unsupported provider: {provider}")
+
+    client = client_cls()
+    kwargs = {"model": model_kwargs_cfg["model"], "stream": False}
+    for k in ("temperature", "top_p"):
+        if k in model_kwargs_cfg:
+            kwargs[k] = model_kwargs_cfg[k]
+
+    api_kwargs = client.convert_inputs_to_api_kwargs(
+        input=prompt, model_kwargs=kwargs, model_type=ModelType.LLM,
+    )
+    response = await client.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+
+    # Non-streaming: response is a ChatCompletion object
+    if hasattr(response, "choices") and response.choices:
+        return response.choices[0].message.content or ""
+    if isinstance(response, str):
+        return response
+    return str(response)
+
+
+# ---------------------------------------------------------------------------
+# XML parsing
+# ---------------------------------------------------------------------------
+
+def _parse_wiki_structure_xml(xml_text: str) -> dict:
+    """Parse the wiki structure XML returned by the LLM.
+
+    Returns a dict with keys: title, description, pages (list of dicts).
+    """
+    # Strip markdown code fences if present
+    xml_text = re.sub(r"^```(?:xml)?\s*", "", xml_text.strip())
+    xml_text = re.sub(r"```\s*$", "", xml_text.strip())
+
+    # Extract <wiki_structure>...</wiki_structure>
+    match = re.search(r"<wiki_structure>[\s\S]*?</wiki_structure>", xml_text)
+    if not match:
+        raise ValueError("No <wiki_structure> block found in LLM response")
+
+    raw = match.group(0)
+    # Remove control characters
+    raw = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", raw)
+
+    root = ET.fromstring(raw)
+
+    title_el = root.find("title")
+    desc_el = root.find("description")
+
+    pages = []
+    for page_el in root.iter("page"):
+        page_id = page_el.get("id", f"page-{len(pages) + 1}")
+        p_title = (page_el.findtext("title") or "").strip()
+        importance = (page_el.findtext("importance") or "medium").strip()
+        if importance not in ("high", "medium", "low"):
+            importance = "medium"
+
+        file_paths = [
+            fp.text.strip()
+            for fp in page_el.findall(".//file_path")
+            if fp.text
+        ]
+        related = [
+            r.text.strip()
+            for r in page_el.findall(".//related")
+            if r.text
+        ]
+
+        pages.append({
+            "id": page_id,
+            "title": p_title,
+            "importance": importance,
+            "filePaths": file_paths,
+            "relatedPages": related,
+        })
+
+    return {
+        "title": (title_el.text or "").strip() if title_el is not None else "",
+        "description": (desc_el.text or "").strip() if desc_el is not None else "",
+        "pages": pages,
+    }
+
+
+# ---------------------------------------------------------------------------
+# File tree helper
+# ---------------------------------------------------------------------------
+
+def _get_local_file_tree_and_readme(repo_path: str) -> tuple:
+    """Walk a local repository and return (file_tree_str, readme_content)."""
+    file_tree_lines: List[str] = []
+    readme_content = ""
+
+    for root, dirs, files in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and not d.startswith(".")]
+        for fname in files:
+            if fname.startswith(".") or fname == "__init__.py" or fname == ".DS_Store":
+                continue
+            rel = os.path.relpath(os.path.join(root, fname), repo_path)
+            file_tree_lines.append(rel)
+            if fname.lower() == "readme.md" and not readme_content:
+                try:
+                    with open(os.path.join(root, fname), "r", encoding="utf-8") as f:
+                        readme_content = f.read()
+                except Exception:
+                    pass
+
+    return "\n".join(sorted(file_tree_lines)), readme_content
+
+
+def _compute_repo_dir_name(repo_url: str, repo_type: str) -> str:
+    """Compute the local directory name the same way DatabaseManager does."""
+    if repo_url.startswith("https://") or repo_url.startswith("http://"):
+        try:
+            parsed = urlparse(repo_url)
+            path = parsed.path.strip("/").replace(".git", "")
+            return path.replace("/", "_")
+        except Exception:
+            parts = repo_url.rstrip("/").split("/")
+            owner = parts[-2]
+            repo = parts[-1].replace(".git", "")
+            return f"{owner}_{repo}"
+    parts = repo_url.rstrip("/").split("/")
+    return parts[-1].replace(".git", "")
+
+
+# ---------------------------------------------------------------------------
+# WikiGenerator
+# ---------------------------------------------------------------------------
+
+class WikiGenerator:
+    """Generate wiki cache for a repository using LLM.
+
+    Typical usage::
+
+        gen = WikiGenerator(provider="openai", model="gpt-4o-mini")
+        await gen.generate_wiki(
+            repo_url="https://gitlab.example.com/group/project",
+            owner="group", repo="project", repo_type="gitlab",
+        )
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        model: Optional[str] = None,
+        language: str = "en",
+    ):
+        # Fall back to configured defaults
+        self.provider = provider or configs.get("default_provider", "openai")
+        if not model:
+            provider_cfg = configs.get("providers", {}).get(self.provider, {})
+            model = provider_cfg.get("default_model", "")
+        self.model = model
+        self.language = language
+
+    # ---- public API ----
+
+    async def generate_wiki(
+        self,
+        repo_url: str,
+        owner: str,
+        repo: str,
+        repo_type: str = "gitlab",
+        access_token: Optional[str] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ) -> dict:
+        """Full pipeline: file tree -> structure -> pages -> save cache.
+
+        Args:
+            repo_url: Clone URL of the repository.
+            owner: Repository owner / group path.
+            repo: Repository name.
+            repo_type: One of github, gitlab, bitbucket.
+            access_token: Optional access token (unused here; repo already cloned).
+            on_progress: Optional callback with status strings.
+
+        Returns:
+            The saved wiki cache dict.
+        """
+        def _progress(msg: str) -> None:
+            logger.info("[WikiGenerator] %s/%s: %s", owner, repo, msg)
+            if on_progress:
+                on_progress(msg)
+
+        # Step 1 — Locate the local clone and read file tree + README
+        _progress("reading file tree")
+        repo_dir_name = _compute_repo_dir_name(repo_url, repo_type)
+        repo_path = os.path.join(ADALFLOW_ROOT, "repos", repo_dir_name)
+
+        if not os.path.isdir(repo_path):
+            raise FileNotFoundError(
+                f"Local repo not found at {repo_path}. Was it cloned?"
+            )
+
+        file_tree, readme = _get_local_file_tree_and_readme(repo_path)
+        if not file_tree:
+            raise ValueError("Repository file tree is empty")
+
+        # Step 2 — Generate wiki structure via LLM
+        _progress("generating wiki structure")
+        structure_prompt = _wiki_structure_prompt(
+            owner, repo, file_tree, readme, self.language,
+        )
+        structure_response = await _call_llm(self.provider, self.model, structure_prompt)
+        parsed = _parse_wiki_structure_xml(structure_response)
+
+        wiki_structure = {
+            "id": "root",
+            "title": parsed["title"],
+            "description": parsed["description"],
+            "pages": [],       # will be filled with full page objects
+            "sections": [],
+            "rootSections": [],
+        }
+
+        # Step 3 — Generate content for each page (in parallel)
+        generated_pages: Dict[str, dict] = {}
+        total_pages = len(parsed["pages"])
+        _progress(f"generating {total_pages} pages in parallel")
+
+        async def _generate_one(idx: int, page_stub: dict) -> dict:
+            page_prompt = _page_content_prompt(
+                page_stub["title"], page_stub["filePaths"], self.language,
+            )
+            content = await _call_llm(self.provider, self.model, page_prompt)
+            logger.info(
+                "[WikiGenerator] %s/%s: page %d/%d done: %s",
+                owner, repo, idx, total_pages, page_stub["title"],
+            )
+            return {
+                "id": page_stub["id"],
+                "title": page_stub["title"],
+                "content": content,
+                "filePaths": page_stub["filePaths"],
+                "importance": page_stub["importance"],
+                "relatedPages": page_stub["relatedPages"],
+            }
+
+        page_results = await asyncio.gather(
+            *[
+                _generate_one(idx, stub)
+                for idx, stub in enumerate(parsed["pages"], 1)
+            ]
+        )
+
+        for page_obj in page_results:
+            wiki_structure["pages"].append(page_obj)
+            generated_pages[page_obj["id"]] = page_obj
+
+        # Step 4 — Save to wiki cache
+        _progress("saving wiki cache")
+        cache_data = {
+            "wiki_structure": wiki_structure,
+            "generated_pages": generated_pages,
+            "repo": {
+                "owner": owner,
+                "repo": repo,
+                "type": repo_type,
+            },
+            "provider": self.provider,
+            "model": self.model,
+        }
+
+        os.makedirs(WIKI_CACHE_DIR, exist_ok=True)
+        filename = f"deepwiki_cache_{repo_type}_{owner}_{repo}_{self.language}.json"
+        cache_path = os.path.join(WIKI_CACHE_DIR, filename)
+
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(cache_data, f, indent=2, ensure_ascii=False)
+
+        logger.info("Wiki cache saved to %s", cache_path)
+        _progress("done")
+        return cache_data

@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 import sys
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 from urllib.parse import quote
 
 import httpx
@@ -22,6 +22,7 @@ from dotenv import load_dotenv
 # Ensure .env is loaded
 load_dotenv()
 
+from api.config import configs
 from api.logging_config import setup_logging
 
 setup_logging()
@@ -91,11 +92,16 @@ class BatchIndexer:
         last_activity = project.get("last_activity_at", "")
         return needs_reindex(path, last_activity)
 
-    async def index_project(self, project: dict) -> bool:
+    async def index_project(
+        self,
+        project: dict,
+        on_progress: Optional[Callable[[dict], None]] = None,
+    ) -> bool:
         """
-        Clone and create embeddings for a single project.
+        Clone and create embeddings for a single project, then generate wiki cache.
 
-        Uses the existing DatabaseManager.prepare_database pipeline.
+        Uses the existing DatabaseManager.prepare_database pipeline, followed by
+        WikiGenerator to pre-generate wiki content so users see it instantly.
         """
         from api.data_pipeline import DatabaseManager
         from api.metadata_store import set_project_metadata
@@ -130,7 +136,6 @@ class BatchIndexer:
             )
 
             logger.info("Successfully indexed: %s", path_with_ns)
-            return True
         except Exception as exc:
             logger.error("Failed to index %s: %s", path_with_ns, exc)
 
@@ -145,6 +150,43 @@ class BatchIndexer:
                 status="error",
             )
             return False
+
+        # --- Generate wiki cache ---
+        try:
+            from api.wiki_generator import WikiGenerator
+
+            if on_progress:
+                on_progress({
+                    "current_project": path_with_ns,
+                    "status": "generating_wiki",
+                })
+
+            # Derive owner / repo from path_with_namespace
+            parts = path_with_ns.split("/")
+            owner = parts[0] if len(parts) >= 2 else path_with_ns
+            repo_name = parts[-1] if len(parts) >= 2 else path_with_ns
+
+            default_provider = configs.get("default_provider", "openai")
+            provider_cfg = configs.get("providers", {}).get(default_provider, {})
+            default_model = provider_cfg.get("default_model", "")
+
+            generator = WikiGenerator(
+                provider=default_provider,
+                model=default_model,
+            )
+            await generator.generate_wiki(
+                repo_url=http_url,
+                owner=owner,
+                repo=repo_name,
+                repo_type="gitlab",
+                access_token=self.service_token,
+            )
+            logger.info("Wiki cache generated for %s", path_with_ns)
+        except Exception as exc:
+            # Wiki generation failure should not affect index status
+            logger.warning("Wiki generation failed for %s: %s", path_with_ns, exc)
+
+        return True
 
     async def fetch_project_by_id(self, project_id: int) -> Optional[dict]:
         """Fetch a single project's info from GitLab by its ID."""
@@ -240,7 +282,16 @@ class BatchIndexer:
                     }
                 )
 
-            success = await self.index_project(project)
+            # Create a sub-progress callback that preserves current/total
+            def _wiki_progress(info: dict) -> None:
+                if on_progress:
+                    on_progress({
+                        "current": current,
+                        "total": grand_total,
+                        **info,
+                    })
+
+            success = await self.index_project(project, on_progress=_wiki_progress)
             if success:
                 indexed += 1
             else:
@@ -313,7 +364,16 @@ class BatchIndexer:
                     }
                 )
 
-            success = await self.index_project(project)
+            # Create a sub-progress callback that preserves current/total
+            def _wiki_progress(info: dict) -> None:
+                if on_progress:
+                    on_progress({
+                        "current": current,
+                        "total": grand_total,
+                        **info,
+                    })
+
+            success = await self.index_project(project, on_progress=_wiki_progress)
             if success:
                 indexed += 1
             else:
