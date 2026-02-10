@@ -51,9 +51,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(() => {
-    // Redirect to backend GitLab OAuth login endpoint
-    const backendUrl = process.env.NEXT_PUBLIC_SERVER_BASE_URL || 'http://localhost:8001';
-    window.location.href = `${backendUrl}/auth/gitlab/login`;
+    // Redirect via Next.js rewrite proxy so the browser stays on the frontend origin
+    window.location.href = `/auth/gitlab/login`;
   }, []);
 
   // Fetch user info from /auth/me using the stored JWT (proxied via Next.js rewrites)
