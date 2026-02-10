@@ -1,5 +1,5 @@
 {
-  "default_provider": "google",
+  "default_provider": "openai",
   "providers": {
     "dashscope": {
       "default_model": "qwen-plus",
@@ -41,35 +41,12 @@
       }
     },
     "openai": {
-      "default_model": "gpt-5-nano",
+      "default_model": "grok-4.1-thinking",
       "supportsCustomModel": true,
       "models": {
-        "gpt-5": {
-          "temperature": 1.0
-        },
-        "gpt-5-nano": {
-          "temperature": 1.0
-        },
-        "gpt-5-mini": {
-          "temperature": 1.0
-        },
-        "gpt-4o": {
+        "grok-4.1-thinking": {
           "temperature": 0.7,
           "top_p": 0.8
-        },
-        "gpt-4.1": {
-          "temperature": 0.7,
-          "top_p": 0.8
-        },
-        "o1": {
-          "temperature": 0.7,
-          "top_p": 0.8
-        },
-        "o3": {
-          "temperature": 1.0
-        },
-        "o4-mini": {
-          "temperature": 1.0
         }
       }
     },

@@ -77,6 +77,11 @@ class ChatCompletionRequest(BaseModel):
 async def chat_completions_stream(request: ChatCompletionRequest):
     """Stream a chat completion response directly using Google Generative AI"""
     try:
+        # Fallback to configured default provider if provider is empty
+        if not request.provider:
+            request.provider = configs.get("default_provider", "openai")
+            logger.info(f"Empty provider in request, falling back to: {request.provider}")
+
         # Check if request contains very large input
         input_too_large = False
         if request.messages and len(request.messages) > 0:
