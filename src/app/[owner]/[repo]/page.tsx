@@ -7,6 +7,7 @@ import ModelSelectionModal from '@/components/ModelSelectionModal';
 import ThemeToggle from '@/components/theme-toggle';
 import WikiTreeView from '@/components/WikiTreeView';
 import { useLanguage } from '@/contexts/LanguageContext';
+import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
 import { RepoInfo } from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
 import { extractUrlDomain, extractUrlPath } from '@/utils/urlDecoder';
@@ -176,6 +177,9 @@ const createBitbucketHeaders = (bitbucketToken: string): HeadersInit => {
 
 
 export default function RepoWikiPage() {
+  // Auth context for API proxy calls
+  const { token: jwtToken } = useAuth();
+
   // Get route parameters and search params
   const params = useParams();
   const searchParams = useSearchParams();
@@ -1293,27 +1297,24 @@ IMPORTANT:
         }
       }
       else if (effectiveRepoInfo.type === 'gitlab') {
-        // GitLab API approach
+        // GitLab API approach — via backend proxy to avoid CORS and token issues
         const projectPath = extractUrlPath(effectiveRepoInfo.repoUrl ?? '')?.replace(/\.git$/, '') || `${owner}/${repo}`;
-        const projectDomain = extractUrlDomain(effectiveRepoInfo.repoUrl ?? "https://gitlab.com");
-        const encodedProjectPath = encodeURIComponent(projectPath);
 
-        const headers = createGitlabHeaders(currentToken);
+        const proxyHeaders: HeadersInit = {
+          'Content-Type': 'application/json',
+          ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
+        };
 
         /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
         const filesData: any[] = [];
 
         try {
           // Step 1: Get project info to determine default branch
-          let projectInfoUrl: string;
           let defaultBranchLocal = 'main'; // fallback
-          try {
-            const validatedUrl = new URL(projectDomain ?? ''); // Validate domain
-            projectInfoUrl = `${validatedUrl.origin}/api/v4/projects/${encodedProjectPath}`;
-          } catch (err) {
-            throw new Error(`Invalid project domain URL: ${projectDomain}`);
-          }
-          const projectInfoRes = await fetch(projectInfoUrl, { headers });
+          const projectInfoRes = await fetch(
+            `/api/gitlab/project_info?project_path=${encodeURIComponent(projectPath)}`,
+            { headers: proxyHeaders }
+          );
 
           if (!projectInfoRes.ok) {
             const errorData = await projectInfoRes.text();
@@ -1329,22 +1330,23 @@ IMPORTANT:
           // Step 2: Paginate to fetch full file tree
           let page = 1;
           let morePages = true;
-          
-          while (morePages) {
-            const apiUrl = `${projectInfoUrl}/repository/tree?recursive=true&per_page=100&page=${page}`;
-            const response = await fetch(apiUrl, { headers });
 
-            if (!response.ok) {
-                const errorData = await response.text();
+          while (morePages) {
+            const treeRes = await fetch(
+              `/api/gitlab/repository_tree?project_path=${encodeURIComponent(projectPath)}&ref=${defaultBranchLocal}&page=${page}&per_page=100`,
+              { headers: proxyHeaders }
+            );
+
+            if (!treeRes.ok) {
+                const errorData = await treeRes.text();
               throw new Error(`Error fetching GitLab repository structure (page ${page}): ${errorData}`);
             }
 
-            const pageData = await response.json();
+            const pageData = await treeRes.json();
             filesData.push(...pageData);
 
-            const nextPage = response.headers.get('x-next-page');
-            morePages = !!nextPage;
-            page = nextPage ? parseInt(nextPage, 10) : page + 1;
+            morePages = pageData.length === 100;
+            page += 1;
         }
 
           if (!Array.isArray(filesData) || filesData.length === 0) {

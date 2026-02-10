@@ -1,5 +1,8 @@
 import os
 import logging
+from urllib.parse import quote
+
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -452,6 +455,55 @@ async def save_wiki_cache(data: WikiCacheRequest) -> bool:
     except Exception as e:
         logger.error(f"Unexpected error saving wiki cache to {cache_path}: {e}", exc_info=True)
         return False
+
+# --- GitLab proxy endpoints ---
+
+
+@app.get("/api/gitlab/project_info")
+async def gitlab_project_info(
+    project_path: str = Query(..., description="GitLab project path, e.g. 'group/project'"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Proxy: fetch GitLab project info using the user's OAuth token."""
+    gitlab_token = current_user.get("gitlab_access_token", "")
+    encoded = quote(project_path, safe="")
+    url = f"{GITLAB_URL}/api/v4/projects/{encoded}"
+
+    async with httpx.AsyncClient(verify=False) as client:
+        resp = await client.get(
+            url,
+            headers={"Authorization": f"Bearer {gitlab_token}"},
+            timeout=15.0,
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return resp.json()
+
+
+@app.get("/api/gitlab/repository_tree")
+async def gitlab_repository_tree(
+    project_path: str = Query(..., description="GitLab project path"),
+    ref: str = Query("main", description="Branch or tag"),
+    page: int = Query(1),
+    per_page: int = Query(100),
+    current_user: dict = Depends(get_current_user),
+):
+    """Proxy: fetch GitLab repository tree using the user's OAuth token."""
+    gitlab_token = current_user.get("gitlab_access_token", "")
+    encoded = quote(project_path, safe="")
+    url = f"{GITLAB_URL}/api/v4/projects/{encoded}/repository/tree"
+
+    async with httpx.AsyncClient(verify=False) as client:
+        resp = await client.get(
+            url,
+            params={"recursive": "true", "per_page": per_page, "page": page, "ref": ref},
+            headers={"Authorization": f"Bearer {gitlab_token}"},
+            timeout=30.0,
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    return resp.json()
+
 
 # --- Wiki Cache API Endpoints ---
 

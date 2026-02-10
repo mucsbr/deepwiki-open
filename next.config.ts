@@ -72,6 +72,10 @@ const nextConfig: NextConfig = {
         destination: `${TARGET_SERVER_BASE_URL}/api/admin/:path*`,
       },
       {
+        source: '/api/gitlab/:path*',
+        destination: `${TARGET_SERVER_BASE_URL}/api/gitlab/:path*`,
+      },
+      {
         source: '/api/lang/config',
         destination: `${TARGET_SERVER_BASE_URL}/lang/config`,
       },
