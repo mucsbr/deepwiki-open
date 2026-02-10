@@ -94,10 +94,12 @@ def is_project_indexed(project_path: str) -> bool:
 def needs_reindex(project_path: str, last_activity_at: str) -> bool:
     """
     Check if a project needs re-indexing by comparing last_activity_at
-    timestamps.
+    timestamps. Always re-index if the previous attempt resulted in an error.
     """
     meta = get_project_metadata(project_path)
     if meta is None:
+        return True
+    if meta.get("status") == "error":
         return True
     stored = meta.get("last_activity_at", "")
     return stored != last_activity_at
