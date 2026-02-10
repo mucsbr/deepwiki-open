@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: deepwirk-gitlab
     ports:
       - "${PORT:-8001}:${PORT:-8001}"  # API port
       - "3000:3000"  # Next.js port
