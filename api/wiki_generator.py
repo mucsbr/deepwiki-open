@@ -273,10 +273,20 @@ async def _call_llm(provider: str, model: str, prompt: str) -> str:
 # XML parsing
 # ---------------------------------------------------------------------------
 
+def _sanitize_xml(raw: str) -> str:
+    """Clean up common LLM XML issues so ElementTree can parse it."""
+    # Remove control characters
+    raw = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", raw)
+    # Escape bare '&' that are not already part of an entity (e.g. &amp; &lt;)
+    raw = re.sub(r"&(?!(?:amp|lt|gt|apos|quot|#\d+|#x[0-9a-fA-F]+);)", "&amp;", raw)
+    return raw
+
+
 def _parse_wiki_structure_xml(xml_text: str) -> dict:
     """Parse the wiki structure XML returned by the LLM.
 
     Returns a dict with keys: title, description, pages (list of dicts).
+    Falls back to regex extraction if ET parsing fails.
     """
     # Strip markdown code fences if present
     xml_text = re.sub(r"^```(?:xml)?\s*", "", xml_text.strip())
@@ -287,11 +297,14 @@ def _parse_wiki_structure_xml(xml_text: str) -> dict:
     if not match:
         raise ValueError("No <wiki_structure> block found in LLM response")
 
-    raw = match.group(0)
-    # Remove control characters
-    raw = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", raw)
+    raw = _sanitize_xml(match.group(0))
 
-    root = ET.fromstring(raw)
+    # Try ET parsing; fall back to regex on failure
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        logger.warning("ET.fromstring failed (%s), falling back to regex", exc)
+        return _parse_wiki_structure_regex(raw)
 
     title_el = root.find("title")
     desc_el = root.find("description")
@@ -328,6 +341,47 @@ def _parse_wiki_structure_xml(xml_text: str) -> dict:
         "description": (desc_el.text or "").strip() if desc_el is not None else "",
         "pages": pages,
     }
+
+
+def _parse_wiki_structure_regex(xml_text: str) -> dict:
+    """Regex fallback when ElementTree cannot parse the LLM XML."""
+    # Top-level title / description
+    title = ""
+    desc = ""
+    title_m = re.search(r"<wiki_structure>\s*<title>(.*?)</title>", xml_text, re.S)
+    if title_m:
+        title = title_m.group(1).strip()
+    desc_m = re.search(r"<description>(.*?)</description>", xml_text, re.S)
+    if desc_m:
+        desc = desc_m.group(1).strip()
+
+    pages: List[dict] = []
+    for page_m in re.finditer(r"<page\s+id=[\"']([^\"']+)[\"']>(.*?)</page>", xml_text, re.S):
+        page_id = page_m.group(1)
+        body = page_m.group(2)
+
+        p_title_m = re.search(r"<title>(.*?)</title>", body, re.S)
+        imp_m = re.search(r"<importance>(.*?)</importance>", body, re.S)
+        p_title = p_title_m.group(1).strip() if p_title_m else ""
+        importance = imp_m.group(1).strip() if imp_m else "medium"
+        if importance not in ("high", "medium", "low"):
+            importance = "medium"
+
+        file_paths = [fp.strip() for fp in re.findall(r"<file_path>(.*?)</file_path>", body, re.S) if fp.strip()]
+        related = [r.strip() for r in re.findall(r"<related>(.*?)</related>", body, re.S) if r.strip()]
+
+        pages.append({
+            "id": page_id,
+            "title": p_title,
+            "importance": importance,
+            "filePaths": file_paths,
+            "relatedPages": related,
+        })
+
+    if not pages:
+        raise ValueError("Failed to extract any pages from LLM XML (regex fallback)")
+
+    return {"title": title, "description": desc, "pages": pages}
 
 
 # ---------------------------------------------------------------------------
