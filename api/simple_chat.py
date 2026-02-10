@@ -77,6 +77,9 @@ class ChatCompletionRequest(BaseModel):
 async def chat_completions_stream(request: ChatCompletionRequest):
     """Stream a chat completion response directly using Google Generative AI"""
     try:
+        # Log incoming provider/model
+        logger.info(f"[chat_completions_stream] Incoming request: provider='{request.provider}', model='{request.model}'")
+
         # Fallback to configured default provider if provider is empty
         if not request.provider:
             request.provider = configs.get("default_provider", "openai")

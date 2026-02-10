@@ -388,8 +388,10 @@ def get_model_config(provider="google", model=None):
         raise ValueError(f"Model client not specified for provider '{provider}'")
 
     # If model not provided, use default model for the provider
+    logger.info(f"get_model_config called: provider='{provider}', model='{model}' (type={type(model).__name__})")
     if not model:
         model = provider_config.get("default_model")
+        logger.info(f"Model was empty, using default_model: '{model}'")
         if not model:
             raise ValueError(f"No default model specified for provider '{provider}'")
 

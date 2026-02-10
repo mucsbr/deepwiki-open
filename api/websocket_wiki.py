@@ -120,6 +120,9 @@ async def handle_websocket_chat(websocket: WebSocket):
                 await websocket.close(code=4003)
                 return
 
+        # Log incoming provider/model
+        logger.info(f"[handle_websocket_chat] Incoming request: provider='{request.provider}', model='{request.model}'")
+
         # Fallback to configured default provider if provider is empty
         if not request.provider:
             request.provider = configs.get("default_provider", "openai")
