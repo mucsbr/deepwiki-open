@@ -10,6 +10,7 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
 import { extractUrlDomain, extractUrlPath } from '@/utils/urlDecoder';
+import { getWebSocketUrl } from '@/utils/websocketClient';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -275,10 +276,7 @@ export default function RepoWikiPage() {
   const [isAskModalOpen, setIsAskModalOpen] = useState(false);
   const askComponentRef = useRef<{ clearConversation: () => void } | null>(null);
 
-  // Authentication state
-  const [authRequired, setAuthRequired] = useState<boolean>(false);
-  const [authCode, setAuthCode] = useState<string>('');
-  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+  // Authentication - use JWT from AuthContext (no more manual auth code)
 
   // Default branch state
   const [defaultBranch, setDefaultBranch] = useState<string>('main');
@@ -346,28 +344,8 @@ export default function RepoWikiPage() {
     };
   }, [isAskModalOpen]);
 
-  // Fetch authentication status on component mount
-  useEffect(() => {
-    const fetchAuthStatus = async () => {
-      try {
-        setIsAuthLoading(true);
-        const response = await fetch('/api/auth/status');
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        const data = await response.json();
-        setAuthRequired(data.auth_required);
-      } catch (err) {
-        console.error("Failed to fetch auth status:", err);
-        // Assuming auth is required if fetch fails to avoid blocking UI for safety
-        setAuthRequired(true);
-      } finally {
-        setIsAuthLoading(false);
-      }
-    };
-
-    fetchAuthStatus();
-  }, []);
+  // JWT token from localStorage for API calls
+  const jwtToken = typeof window !== 'undefined' ? localStorage.getItem('deepwiki_jwt') : null;
 
   // Generate content for a wiki page
   const generatePageContent = useCallback(async (page: WikiPage, owner: string, repo: string) => {
@@ -543,10 +521,8 @@ Remember:
         let content = '';
 
         try {
-          // Create WebSocket URL from the server base URL
-          const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-          const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-          const wsUrl = `${wsBaseUrl}/ws/chat`;
+          // Create WebSocket URL with JWT token
+          const wsUrl = getWebSocketUrl();
 
           // Create a new WebSocket connection
           const ws = new WebSocket(wsUrl);
@@ -608,6 +584,7 @@ Remember:
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
             },
             body: JSON.stringify(requestBody)
           });
@@ -840,10 +817,8 @@ IMPORTANT:
       let responseText = '';
 
       try {
-        // Create WebSocket URL from the server base URL
-        const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-        const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-        const wsUrl = `${wsBaseUrl}/ws/chat`;
+        // Create WebSocket URL with JWT token
+        const wsUrl = getWebSocketUrl();
 
         // Create a new WebSocket connection
         const ws = new WebSocket(wsUrl);
@@ -905,6 +880,7 @@ IMPORTANT:
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
           },
           body: JSON.stringify(requestBody)
         });
@@ -1588,7 +1564,6 @@ IMPORTANT:
         is_custom_model: isCustomSelectedModelState.toString(),
         custom_model: customSelectedModelState,
         comprehensive: isComprehensiveView.toString(),
-        authorization_code: authCode,
       });
 
       // Add file filters configuration
@@ -1599,18 +1574,16 @@ IMPORTANT:
         params.append('excluded_files', modelExcludedFiles);
       }
 
-      if(authRequired && !authCode) {
-        setIsLoading(false);
-        console.error("Authorization code is required");
-        setError('Authorization code is required');
-        return;
+      const headers: Record<string, string> = {
+        'Accept': 'application/json',
+      };
+      if (jwtToken) {
+        headers['Authorization'] = `Bearer ${jwtToken}`;
       }
 
       const response = await fetch(`/api/wiki_cache?${params.toString()}`, {
         method: 'DELETE',
-        headers: {
-          'Accept': 'application/json',
-        }
+        headers,
       });
 
       if (response.ok) {
@@ -1684,7 +1657,7 @@ IMPORTANT:
     // For now, we rely on the standard loadData flow initiated by resetting effectRan and dependencies.
     // This will re-trigger the main data loading useEffect.
     // No direct call to fetchRepositoryStructure here, let the useEffect handle it based on effectRan.current = false.
-  }, [effectiveRepoInfo, language, messages.loading, activeContentRequests, selectedProviderState, selectedModelState, isCustomSelectedModelState, customSelectedModelState, modelExcludedDirs, modelExcludedFiles, isComprehensiveView, authCode, authRequired]);
+  }, [effectiveRepoInfo, language, messages.loading, activeContentRequests, selectedProviderState, selectedModelState, isCustomSelectedModelState, customSelectedModelState, modelExcludedDirs, modelExcludedFiles, isComprehensiveView]);
 
   // Start wiki generation when component mounts
   useEffect(() => {
@@ -1702,7 +1675,11 @@ IMPORTANT:
             language: language,
             comprehensive: isComprehensiveView.toString(),
           });
-          const response = await fetch(`/api/wiki_cache?${params.toString()}`);
+          const response = await fetch(`/api/wiki_cache?${params.toString()}`, {
+            headers: {
+              ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
+            },
+          });
 
           if (response.ok) {
             const cachedData = await response.json(); // Returns null if no cache
@@ -1911,6 +1888,7 @@ IMPORTANT:
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
+                ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
               },
               body: JSON.stringify(dataToCache),
             });
@@ -2268,12 +2246,6 @@ IMPORTANT:
         setIncludedFiles={setModelIncludedFiles}
         onApply={confirmRefresh}
         showWikiType={true}
-        showTokenInput={effectiveRepoInfo.type !== 'local' && !currentToken} // Show token input if not local and no current token
-        repositoryType={effectiveRepoInfo.type as 'github' | 'gitlab' | 'bitbucket'}
-        authRequired={authRequired}
-        authCode={authCode}
-        setAuthCode={setAuthCode}
-        isAuthLoading={isAuthLoading}
       />
     </div>
   );

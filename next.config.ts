@@ -48,16 +48,24 @@ const nextConfig: NextConfig = {
         destination: `${TARGET_SERVER_BASE_URL}/api/wiki_cache`,
       },
       {
+        source: '/api/projects',
+        destination: `${TARGET_SERVER_BASE_URL}/api/projects`,
+      },
+      {
+        source: '/api/processed_projects',
+        destination: `${TARGET_SERVER_BASE_URL}/api/processed_projects`,
+      },
+      {
         source: '/local_repo/structure',
         destination: `${TARGET_SERVER_BASE_URL}/local_repo/structure`,
       },
       {
-        source: '/api/auth/status',
-        destination: `${TARGET_SERVER_BASE_URL}/auth/status`,
+        source: '/auth/gitlab/:path*',
+        destination: `${TARGET_SERVER_BASE_URL}/auth/gitlab/:path*`,
       },
       {
-        source: '/api/auth/validate',
-        destination: `${TARGET_SERVER_BASE_URL}/auth/validate`,
+        source: '/auth/me',
+        destination: `${TARGET_SERVER_BASE_URL}/auth/me`,
       },
       {
         source: '/api/lang/config',

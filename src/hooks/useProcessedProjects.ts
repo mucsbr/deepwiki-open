@@ -20,7 +20,12 @@ export function useProcessedProjects() {
       setIsLoading(true);
       setError(null);
       try {
-        const response = await fetch('/api/wiki/projects');
+        const jwtToken = typeof window !== 'undefined' ? localStorage.getItem('deepwiki_jwt') : null;
+        const response = await fetch('/api/wiki/projects', {
+          headers: {
+            ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
+          },
+        });
         if (!response.ok) {
           throw new Error(`Failed to fetch projects: ${response.statusText}`);
         }

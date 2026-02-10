@@ -57,6 +57,9 @@ const Ask: React.FC<AskProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [deepResearch, setDeepResearch] = useState(false);
 
+  // Get JWT for API authorization
+  const jwtToken = typeof window !== 'undefined' ? localStorage.getItem('deepwiki_jwt') : null;
+
   // Model selection state
   const [selectedProvider, setSelectedProvider] = useState(provider);
   const [selectedModel, setSelectedModel] = useState(model);
@@ -410,6 +413,7 @@ const Ask: React.FC<AskProps> = ({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
         },
         body: JSON.stringify(requestBody)
       });
@@ -918,8 +922,6 @@ const Ask: React.FC<AskProps> = ({
           console.log('Model selection applied:', selectedProvider, selectedModel);
         }}
         showWikiType={false}
-        authRequired={false}
-        isAuthLoading={false}
       />
     </div>
   );

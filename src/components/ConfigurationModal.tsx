@@ -1,9 +1,8 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
 import { useLanguage } from '@/contexts/LanguageContext';
 import UserSelector from './UserSelector';
-import TokenInput from './TokenInput';
 
 interface ConfigurationModalProps {
   isOpen: boolean;
@@ -31,14 +30,6 @@ interface ConfigurationModalProps {
   customModel: string;
   setCustomModel: (value: string) => void;
 
-  // Platform selection
-  selectedPlatform: 'github' | 'gitlab' | 'bitbucket';
-  setSelectedPlatform: (value: 'github' | 'gitlab' | 'bitbucket') => void;
-
-  // Access token
-  accessToken: string;
-  setAccessToken: (value: string) => void;
-
   // File filter options
   excludedDirs: string;
   setExcludedDirs: (value: string) => void;
@@ -52,12 +43,6 @@ interface ConfigurationModalProps {
   // Form submission
   onSubmit: () => void;
   isSubmitting: boolean;
-
-  // Authentication
-  authRequired?: boolean;
-  authCode?: string;
-  setAuthCode?: (code: string) => void;
-  isAuthLoading?: boolean;
 }
 
 export default function ConfigurationModal({
@@ -77,10 +62,6 @@ export default function ConfigurationModal({
   setIsCustomModel,
   customModel,
   setCustomModel,
-  selectedPlatform,
-  setSelectedPlatform,
-  accessToken,
-  setAccessToken,
   excludedDirs,
   setExcludedDirs,
   excludedFiles,
@@ -91,15 +72,8 @@ export default function ConfigurationModal({
   setIncludedFiles,
   onSubmit,
   isSubmitting,
-  authRequired,
-  authCode,
-  setAuthCode,
-  isAuthLoading
 }: ConfigurationModalProps) {
   const { messages: t } = useLanguage();
-
-  // Show token section state
-  const [showTokenSection, setShowTokenSection] = useState(false);
 
   if (!isOpen) return null;
 
@@ -152,7 +126,7 @@ export default function ConfigurationModal({
               </select>
             </div>
 
-            {/* Wiki Type Selector - more compact version */}
+            {/* Wiki Type Selector */}
             <div className="mb-4">
               <label className="block text-sm font-medium text-[var(--foreground)] mb-2">
                 {t.form?.wikiType || 'Wiki Type'}
@@ -231,46 +205,16 @@ export default function ConfigurationModal({
               />
             </div>
 
-            {/* Access token section using TokenInput component */}
-            <TokenInput
-              selectedPlatform={selectedPlatform}
-              setSelectedPlatform={setSelectedPlatform}
-              accessToken={accessToken}
-              setAccessToken={setAccessToken}
-              showTokenSection={showTokenSection}
-              onToggleTokenSection={() => setShowTokenSection(!showTokenSection)}
-              allowPlatformChange={true}
-            />
-
-            {/* Authorization Code Input */}
-            {isAuthLoading && (
-              <div className="mb-4 p-3 bg-[var(--background)]/50 rounded-md border border-[var(--border-color)] text-sm text-[var(--muted)]">
-                Loading authentication status...
+            {/* Platform info - GitLab only */}
+            <div className="mb-4 p-3 bg-[var(--background)]/50 rounded-md border border-[var(--border-color)]">
+              <div className="flex items-center gap-2 text-sm text-[var(--muted)]">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Authentication is handled via GitLab SSO. No manual token required.
               </div>
-            )}
-            {!isAuthLoading && authRequired && (
-              <div className="mb-4 p-4 bg-[var(--background)]/50 rounded-md border border-[var(--border-color)]">
-                <label htmlFor="authCode" className="block text-sm font-medium text-[var(--foreground)] mb-2">
-                  {t.form?.authorizationCode || 'Authorization Code'}
-                </label>
-                <input
-                  type="password"
-                  id="authCode"
-                  value={authCode || ''}
-                  onChange={(e) => setAuthCode?.(e.target.value)}
-                  className="input-japanese block w-full px-3 py-2 text-sm rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
-                  placeholder="Enter your authorization code"
-                />
-                 <div className="flex items-center mt-2 text-xs text-[var(--muted)]">
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1 text-[var(--muted)]"
-                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                      d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                   {t.form?.authorizationRequired || 'Authentication is required to generate the wiki.'}
-                </div>
-              </div>
-            )}
+            </div>
           </div>
 
           {/* Modal footer */}

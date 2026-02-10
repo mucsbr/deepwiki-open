@@ -6,12 +6,25 @@
 // Get the server base URL from environment or use default
 const SERVER_BASE_URL = process.env.SERVER_BASE_URL || 'http://localhost:8001';
 
-// Convert HTTP URL to WebSocket URL
-const getWebSocketUrl = () => {
+// JWT storage key (must match AuthContext)
+const JWT_STORAGE_KEY = 'deepwiki_jwt';
+
+// Convert HTTP URL to WebSocket URL, appending JWT token
+export const getWebSocketUrl = () => {
   const baseUrl = SERVER_BASE_URL;
   // Replace http:// with ws:// or https:// with wss://
   const wsBaseUrl = baseUrl.replace(/^http/, 'ws');
-  return `${wsBaseUrl}/ws/chat`;
+  let url = `${wsBaseUrl}/ws/chat`;
+
+  // Append JWT token from localStorage if available
+  if (typeof window !== 'undefined') {
+    const token = localStorage.getItem(JWT_STORAGE_KEY);
+    if (token) {
+      url += `?token=${encodeURIComponent(token)}`;
+    }
+  }
+
+  return url;
 };
 
 export interface ChatMessage {

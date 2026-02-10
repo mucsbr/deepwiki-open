@@ -767,9 +767,18 @@ class DatabaseManager:
             # GitHub URL format: https://github.com/owner/repo
             # GitLab URL format: https://gitlab.com/owner/repo or https://gitlab.com/group/subgroup/repo
             # Bitbucket URL format: https://bitbucket.org/owner/repo
-            owner = url_parts[-2]
-            repo = url_parts[-1].replace(".git", "")
-            repo_name = f"{owner}_{repo}"
+            # For GitLab, support multi-level paths (group/subgroup/project)
+            # Find the domain part (index 2 for https://domain.com/) and take everything after it
+            try:
+                from urllib.parse import urlparse
+                parsed = urlparse(repo_url_or_path)
+                path = parsed.path.strip('/').replace('.git', '')
+                # Replace slashes with underscores for filesystem compatibility
+                repo_name = path.replace('/', '_')
+            except Exception:
+                owner = url_parts[-2]
+                repo = url_parts[-1].replace(".git", "")
+                repo_name = f"{owner}_{repo}"
         else:
             repo_name = url_parts[-1].replace(".git", "")
         return repo_name

@@ -43,10 +43,15 @@ if AWS_REGION:
 if AWS_ROLE_ARN:
     os.environ["AWS_ROLE_ARN"] = AWS_ROLE_ARN
 
-# Wiki authentication settings
-raw_auth_mode = os.environ.get('DEEPWIKI_AUTH_MODE', 'False')
-WIKI_AUTH_MODE = raw_auth_mode.lower() in ['true', '1', 't']
-WIKI_AUTH_CODE = os.environ.get('DEEPWIKI_AUTH_CODE', '')
+# GitLab Enterprise settings
+GITLAB_URL = os.environ.get('GITLAB_URL', '')
+GITLAB_CLIENT_ID = os.environ.get('GITLAB_CLIENT_ID', '')
+GITLAB_CLIENT_SECRET = os.environ.get('GITLAB_CLIENT_SECRET', '')
+GITLAB_SERVICE_TOKEN = os.environ.get('GITLAB_SERVICE_TOKEN', '')
+GITLAB_BATCH_GROUPS = os.environ.get('GITLAB_BATCH_GROUPS', '')
+JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', '')
+PERMISSION_CACHE_TTL = int(os.environ.get('PERMISSION_CACHE_TTL', '300'))
+BATCH_INDEX_SCHEDULE = os.environ.get('BATCH_INDEX_SCHEDULE', '')
 
 # Embedder settings
 EMBEDDER_TYPE = os.environ.get('DEEPWIKI_EMBEDDER_TYPE', 'openai').lower()

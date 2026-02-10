@@ -8,6 +8,7 @@ import ThemeToggle from '@/components/theme-toggle';
 import Markdown from '@/components/Markdown';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
+import { getWebSocketUrl } from '@/utils/websocketClient';
 import getRepoUrl from '@/utils/getRepoUrl';
 
 // Helper function to add tokens and other parameters to request body
@@ -47,6 +48,9 @@ export default function WorkshopPage() {
 
   // Extract tokens from search params
   const token = searchParams.get('token') || '';
+
+  // Get JWT for API authorization
+  const jwtToken = typeof window !== 'undefined' ? localStorage.getItem('deepwiki_jwt') : null;
   const repoType = searchParams.get('type') || 'github';
   const localPath = searchParams.get('local_path') ? decodeURIComponent(searchParams.get('local_path') || '') : undefined;
   const repoUrl = searchParams.get('repo_url') ? decodeURIComponent(searchParams.get('repo_url') || '') : undefined;
@@ -118,7 +122,11 @@ export default function WorkshopPage() {
         repo_type: repoInfo.type,
         language: language,
       });
-      const response = await fetch(`/api/wiki_cache?${params.toString()}`);
+      const response = await fetch(`/api/wiki_cache?${params.toString()}`, {
+        headers: {
+          ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
+        },
+      });
 
       if (response.ok) {
         const cachedData = await response.json();
@@ -316,10 +324,8 @@ Make the workshop content in ${language === 'en' ? 'English' :
       let content = '';
 
       try {
-        // Create WebSocket URL from the server base URL
-        const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-        const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-        const wsUrl = `${wsBaseUrl}/ws/chat`;
+        // Create WebSocket URL with JWT token
+        const wsUrl = getWebSocketUrl();
 
         // Create a new WebSocket connection
         const ws = new WebSocket(wsUrl);
@@ -389,6 +395,7 @@ Make the workshop content in ${language === 'en' ? 'English' :
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
           },
           body: JSON.stringify(requestBody)
         });

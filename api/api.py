@@ -1,6 +1,6 @@
 import os
 import logging
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from typing import List, Optional, Dict, Any, Literal
@@ -141,28 +141,22 @@ class ModelConfig(BaseModel):
     providers: List[Provider] = Field(..., description="List of available model providers")
     defaultProvider: str = Field(..., description="ID of the default provider")
 
-class AuthorizationConfig(BaseModel):
-    code: str = Field(..., description="Authorization code")
+from api.config import configs
+from api.gitlab_auth import router as gitlab_auth_router, get_current_user
+from api.gitlab_permission import (
+    verify_repo_permission,
+    get_user_accessible_projects,
+    check_repo_access,
+)
+from api.config import GITLAB_URL
+from api.metadata_store import get_all_indexed_projects
 
-from api.config import configs, WIKI_AUTH_MODE, WIKI_AUTH_CODE
+# Register GitLab auth routes
+app.include_router(gitlab_auth_router)
 
 @app.get("/lang/config")
 async def get_lang_config():
     return configs["lang_config"]
-
-@app.get("/auth/status")
-async def get_auth_status():
-    """
-    Check if authentication is required for the wiki.
-    """
-    return {"auth_required": WIKI_AUTH_MODE}
-
-@app.post("/auth/validate")
-async def validate_auth_code(request: AuthorizationConfig):
-    """
-    Check authorization code.
-    """
-    return {"success": WIKI_AUTH_CODE == request.code}
 
 @app.get("/models/config", response_model=ModelConfig)
 async def get_model_config():
@@ -458,16 +452,62 @@ async def save_wiki_cache(data: WikiCacheRequest) -> bool:
 
 # --- Wiki Cache API Endpoints ---
 
+@app.get("/api/projects")
+async def list_accessible_projects(current_user: dict = Depends(get_current_user)):
+    """
+    Return the intersection of: projects the user has access to on GitLab
+    AND projects that have been indexed (vectorized).
+    """
+    gitlab_token = current_user.get("gitlab_access_token", "")
+
+    # Get user's accessible projects from GitLab
+    user_projects = await get_user_accessible_projects(gitlab_token, GITLAB_URL)
+
+    # Get indexed projects from metadata store
+    indexed_projects = get_all_indexed_projects()
+    indexed_paths = set(indexed_projects.keys())
+
+    # Intersect: only return projects that are both accessible and indexed
+    result = []
+    for project in user_projects:
+        path = project.get("path_with_namespace", "")
+        if path in indexed_paths:
+            meta = indexed_projects[path]
+            result.append({
+                "id": project.get("id"),
+                "name": project.get("name", ""),
+                "path_with_namespace": path,
+                "description": project.get("description", ""),
+                "last_activity_at": project.get("last_activity_at", ""),
+                "web_url": project.get("web_url", ""),
+                "avatar_url": project.get("avatar_url", ""),
+                "indexed_at": meta.get("indexed_at", ""),
+                "index_status": meta.get("status", "unknown"),
+            })
+
+    return result
+
+
 @app.get("/api/wiki_cache", response_model=Optional[WikiCacheData])
 async def get_cached_wiki(
     owner: str = Query(..., description="Repository owner"),
     repo: str = Query(..., description="Repository name"),
     repo_type: str = Query(..., description="Repository type (e.g., github, gitlab)"),
-    language: str = Query(..., description="Language of the wiki content")
+    language: str = Query(..., description="Language of the wiki content"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Retrieves cached wiki data (structure and generated pages) for a repository.
+    Requires authentication. Checks GitLab permission for the repo.
     """
+    # Permission check
+    project_path = f"{owner}/{repo}"
+    gitlab_token = current_user.get("gitlab_access_token", "")
+    user_id = current_user.get("gitlab_user_id")
+    has_access = await check_repo_access(gitlab_token, project_path, GITLAB_URL, user_id)
+    if not has_access:
+        raise HTTPException(status_code=403, detail=f"No access to {project_path}")
+
     # Language validation
     supported_langs = configs["lang_config"]["supported_languages"]
     if not supported_langs.__contains__(language):
@@ -478,16 +518,23 @@ async def get_cached_wiki(
     if cached_data:
         return cached_data
     else:
-        # Return 200 with null body if not found, as frontend expects this behavior
-        # Or, raise HTTPException(status_code=404, detail="Wiki cache not found") if preferred
         logger.info(f"Wiki cache not found for {owner}/{repo} ({repo_type}), lang: {language}")
         return None
 
 @app.post("/api/wiki_cache")
-async def store_wiki_cache(request_data: WikiCacheRequest):
+async def store_wiki_cache(request_data: WikiCacheRequest, current_user: dict = Depends(get_current_user)):
     """
     Stores generated wiki data (structure and pages) to the server-side cache.
+    Requires authentication. Checks GitLab permission for the repo.
     """
+    # Permission check
+    project_path = f"{request_data.repo.owner}/{request_data.repo.repo}"
+    gitlab_token = current_user.get("gitlab_access_token", "")
+    user_id = current_user.get("gitlab_user_id")
+    has_access = await check_repo_access(gitlab_token, project_path, GITLAB_URL, user_id)
+    if not has_access:
+        raise HTTPException(status_code=403, detail=f"No access to {project_path}")
+
     # Language validation
     supported_langs = configs["lang_config"]["supported_languages"]
 
@@ -507,20 +554,24 @@ async def delete_wiki_cache(
     repo: str = Query(..., description="Repository name"),
     repo_type: str = Query(..., description="Repository type (e.g., github, gitlab)"),
     language: str = Query(..., description="Language of the wiki content"),
-    authorization_code: Optional[str] = Query(None, description="Authorization code")
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Deletes a specific wiki cache from the file system.
+    Requires authentication. Checks GitLab permission for the repo.
     """
+    # Permission check
+    project_path = f"{owner}/{repo}"
+    gitlab_token = current_user.get("gitlab_access_token", "")
+    user_id = current_user.get("gitlab_user_id")
+    has_access = await check_repo_access(gitlab_token, project_path, GITLAB_URL, user_id)
+    if not has_access:
+        raise HTTPException(status_code=403, detail=f"No access to {project_path}")
+
     # Language validation
     supported_langs = configs["lang_config"]["supported_languages"]
     if not supported_langs.__contains__(language):
         raise HTTPException(status_code=400, detail="Language is not supported")
-
-    if WIKI_AUTH_MODE:
-        logger.info("check the authorization code")
-        if not authorization_code or WIKI_AUTH_CODE != authorization_code:
-            raise HTTPException(status_code=401, detail="Authorization code is invalid")
 
     logger.info(f"Attempting to delete wiki cache for {owner}/{repo} ({repo_type}), lang: {language}")
     cache_path = get_wiki_cache_path(owner, repo, repo_type, language)

@@ -8,6 +8,7 @@ import ThemeToggle from '@/components/theme-toggle';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
+import { getWebSocketUrl } from '@/utils/websocketClient';
 
 // Helper function to add tokens and other parameters to request body
 const addTokensToRequestBody = (
@@ -54,6 +55,9 @@ export default function SlidesPage() {
   // Extract tokens from search params
   const token = searchParams.get('token') || '';
   const repoType = searchParams.get('type') || 'github';
+
+  // Get JWT for API authorization
+  const jwtToken = typeof window !== 'undefined' ? localStorage.getItem('deepwiki_jwt') : null;
   const localPath = searchParams.get('local_path') ? decodeURIComponent(searchParams.get('local_path') || '') : undefined;
   const repoUrl = searchParams.get('repo_url') ? decodeURIComponent(searchParams.get('repo_url') || '') : undefined;
   const providerParam = searchParams.get('provider') || '';
@@ -127,7 +131,11 @@ export default function SlidesPage() {
         repo_type: repoInfo.type,
         language: language,
       });
-      const response = await fetch(`/api/wiki_cache?${params.toString()}`);
+      const response = await fetch(`/api/wiki_cache?${params.toString()}`, {
+        headers: {
+          ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
+        },
+      });
 
       if (response.ok) {
         const cachedData = await response.json();
@@ -264,10 +272,8 @@ Give me the numbered list with brief descriptions for each slide. Be creative bu
       let planContent = '';
 
       try {
-        // Create WebSocket URL from the server base URL
-        const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-        const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-        const wsUrl = `${wsBaseUrl}/ws/chat`;
+        // Create WebSocket URL with JWT token
+        const wsUrl = getWebSocketUrl();
 
         // Create a new WebSocket connection
         const ws = new WebSocket(wsUrl);
@@ -326,6 +332,7 @@ Give me the numbered list with brief descriptions for each slide. Be creative bu
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
           },
           body: JSON.stringify(planRequestBody)
         });
@@ -541,9 +548,8 @@ Please return ONLY the HTML with no markdown formatting or code blocks. Just the
 
         try {
           // Create WebSocket URL from the server base URL
-          const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-          const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-          const wsUrl = `${wsBaseUrl}/ws/chat`;
+          // Create WebSocket URL with JWT token
+          const wsUrl = getWebSocketUrl();
 
           // Create a new WebSocket connection
           const ws = new WebSocket(wsUrl);
@@ -602,6 +608,7 @@ Please return ONLY the HTML with no markdown formatting or code blocks. Just the
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
             },
             body: JSON.stringify(slideRequestBody)
           });

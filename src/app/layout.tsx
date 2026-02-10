@@ -3,6 +3,7 @@ import { Noto_Sans_JP, Noto_Serif_JP, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "next-themes";
 import { LanguageProvider } from "@/contexts/LanguageContext";
+import { AuthProvider } from "@/contexts/AuthContext";
 
 // Japanese-friendly fonts
 const notoSansJP = Noto_Sans_JP({
@@ -40,9 +41,11 @@ export default function RootLayout({
         className={`${notoSansJP.variable} ${notoSerifJP.variable} ${geistMono.variable} antialiased`}
       >
         <ThemeProvider attribute="data-theme" defaultTheme="system" enableSystem>
-          <LanguageProvider>
-            {children}
-          </LanguageProvider>
+          <AuthProvider>
+            <LanguageProvider>
+              {children}
+            </LanguageProvider>
+          </AuthProvider>
         </ThemeProvider>
       </body>
     </html>

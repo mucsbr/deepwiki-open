@@ -58,7 +58,12 @@ export default function ProcessedProjects({
       setIsLoading(true);
       setError(null);
       try {
-        const response = await fetch('/api/wiki/projects');
+        const jwtToken = typeof window !== 'undefined' ? localStorage.getItem('deepwiki_jwt') : null;
+        const response = await fetch('/api/wiki/projects', {
+          headers: {
+            ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
+          },
+        });
         if (!response.ok) {
           throw new Error(`Failed to fetch projects: ${response.statusText}`);
         }
@@ -106,9 +111,13 @@ export default function ProcessedProjects({
       return;
     }
     try {
+      const jwtToken = typeof window !== 'undefined' ? localStorage.getItem('deepwiki_jwt') : null;
       const response = await fetch('/api/wiki/projects', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(jwtToken ? { Authorization: `Bearer ${jwtToken}` } : {}),
+        },
         body: JSON.stringify({
           owner: project.owner,
           repo: project.repo,

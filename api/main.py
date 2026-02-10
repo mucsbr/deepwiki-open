@@ -60,11 +60,48 @@ else:
     logger.warning("GOOGLE_API_KEY not configured")
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="DeepWiki API Server")
+    parser.add_argument("--batch-index", action="store_true", help="Run batch indexer for GitLab groups and exit")
+    args = parser.parse_args()
+
+    if args.batch_index:
+        # Run batch indexer mode
+        import asyncio
+        from api.batch_indexer import main as batch_main
+        logger.info("Running in batch-index mode")
+        asyncio.run(batch_main())
+        sys.exit(0)
+
     # Get port from environment variable or use default
     port = int(os.environ.get("PORT", 8001))
 
     # Import the app here to ensure environment variables are set first
     from api.api import app
+
+    # Optional: set up scheduled batch indexing
+    from api.config import BATCH_INDEX_SCHEDULE
+    if BATCH_INDEX_SCHEDULE:
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from apscheduler.triggers.cron import CronTrigger
+
+            scheduler = AsyncIOScheduler()
+
+            async def _scheduled_batch_index():
+                from api.batch_indexer import BatchIndexer
+                from api.config import GITLAB_BATCH_GROUPS, GITLAB_SERVICE_TOKEN, GITLAB_URL
+                group_ids = [int(g.strip()) for g in GITLAB_BATCH_GROUPS.split(",") if g.strip()]
+                if group_ids and GITLAB_SERVICE_TOKEN and GITLAB_URL:
+                    indexer = BatchIndexer(GITLAB_URL, GITLAB_SERVICE_TOKEN, group_ids)
+                    await indexer.run()
+
+            scheduler.add_job(_scheduled_batch_index, CronTrigger.from_crontab(BATCH_INDEX_SCHEDULE))
+            scheduler.start()
+            logger.info(f"Scheduled batch indexing with cron: {BATCH_INDEX_SCHEDULE}")
+        except Exception as e:
+            logger.warning(f"Failed to set up scheduled batch indexing: {e}")
 
     logger.info(f"Starting Streaming API on port {port}")
 

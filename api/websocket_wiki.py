@@ -60,17 +60,65 @@ class ChatCompletionRequest(BaseModel):
     included_dirs: Optional[str] = Field(None, description="Comma-separated list of directories to include exclusively")
     included_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to include exclusively")
 
+async def _verify_ws_auth(websocket: WebSocket) -> dict | None:
+    """
+    Extract and verify JWT from WebSocket query parameter (?token=xxx).
+    Returns user payload or None if invalid/missing.
+    """
+    from api.gitlab_auth import decode_jwt, decrypt_token
+    from jose import JWTError
+
+    token = websocket.query_params.get("token")
+    if not token:
+        return None
+    try:
+        payload = decode_jwt(token)
+        if "gitlab_access_token" in payload:
+            payload["gitlab_access_token"] = decrypt_token(payload["gitlab_access_token"])
+        return payload
+    except JWTError:
+        return None
+
+
 async def handle_websocket_chat(websocket: WebSocket):
     """
     Handle WebSocket connection for chat completions.
     This replaces the HTTP streaming endpoint with a WebSocket connection.
+    Requires JWT authentication via ?token= query parameter.
     """
     await websocket.accept()
 
     try:
+        # --- Authentication ---
+        current_user = await _verify_ws_auth(websocket)
+        if current_user is None:
+            await websocket.send_text("Error: Authentication required. Please log in.")
+            await websocket.close(code=4001)
+            return
+
         # Receive and parse the request data
         request_data = await websocket.receive_json()
         request = ChatCompletionRequest(**request_data)
+
+        # --- Permission check ---
+        from api.gitlab_permission import check_repo_access
+        from api.config import GITLAB_URL
+
+        # Extract owner/repo from repo_url
+        repo_url = request.repo_url
+        url_parts = repo_url.rstrip("/").split("/")
+        if len(url_parts) >= 2:
+            owner = url_parts[-2]
+            repo = url_parts[-1].replace(".git", "")
+            project_path = f"{owner}/{repo}"
+            gitlab_token = current_user.get("gitlab_access_token", "")
+            user_id = current_user.get("gitlab_user_id")
+
+            has_access = await check_repo_access(gitlab_token, project_path, GITLAB_URL, user_id)
+            if not has_access:
+                await websocket.send_text(f"Error: You do not have access to {project_path}")
+                await websocket.close(code=4003)
+                return
 
         # Check if request contains very large input
         input_too_large = False
