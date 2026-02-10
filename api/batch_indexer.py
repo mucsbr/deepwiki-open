@@ -130,10 +130,16 @@ class BatchIndexer:
 
         try:
             db_manager = DatabaseManager()
-            db_manager.prepare_database(
-                repo_url_or_path=http_url,
-                repo_type="gitlab",
-                access_token=self.service_token,
+            # Run synchronous prepare_database in a thread so we don't block
+            # the event loop (git clone + embedding creation is heavy I/O).
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: db_manager.prepare_database(
+                    repo_url_or_path=http_url,
+                    repo_type="gitlab",
+                    access_token=self.service_token,
+                ),
             )
 
             # Record metadata
