@@ -90,7 +90,7 @@ async def check_repo_access(
         async with httpx.AsyncClient(verify=False) as client:
             resp = await client.get(
                 url,
-                headers={"PRIVATE-TOKEN": gitlab_token},
+                headers={"Authorization": f"Bearer {gitlab_token}"},
                 timeout=10.0,
             )
             has_access = resp.status_code == 200
@@ -127,7 +127,7 @@ async def get_user_accessible_projects(
                         "per_page": per_page,
                         "page": page,
                     },
-                    headers={"PRIVATE-TOKEN": gitlab_token},
+                    headers={"Authorization": f"Bearer {gitlab_token}"},
                     timeout=30.0,
                 )
                 if resp.status_code != 200:
