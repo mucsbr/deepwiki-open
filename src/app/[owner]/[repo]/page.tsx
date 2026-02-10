@@ -156,7 +156,7 @@ const createGitlabHeaders = (gitlabToken: string): HeadersInit => {
   };
 
   if (gitlabToken) {
-    headers['PRIVATE-TOKEN'] = gitlabToken;
+    headers['Authorization'] = `Bearer ${gitlabToken}`;
   }
 
   return headers;
