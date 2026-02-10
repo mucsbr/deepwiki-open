@@ -90,11 +90,36 @@ When designing the wiki structure, include pages that would benefit from visual 
 - State machines
 - Class hierarchies
 
+Create a structured wiki with the following main sections:
+- Overview (general information about the project)
+- System Architecture (how the system is designed)
+- Core Features (key functionality)
+- Data Management/Flow: If applicable, how data is stored, processed, accessed, and managed (e.g., database schema, data pipelines, state management).
+- Frontend Components (UI elements, if applicable.)
+- Backend Systems (server-side components)
+- Model Integration (AI model connections)
+- Deployment/Infrastructure (how to deploy, what's the infrastructure like)
+- Extensibility and Customization: If the project architecture supports it, explain how to extend or customize its functionality (e.g., plugins, theming, custom modules, hooks).
+
+Each section should contain relevant pages. For example, the "Frontend Components" section might include pages for "Home Page", "Repository Wiki Page", "Ask Component", etc.
+
 Return your analysis in the following XML format:
 
 <wiki_structure>
   <title>[Overall title for the wiki]</title>
   <description>[Brief description of the repository]</description>
+  <sections>
+    <section id="section-1">
+      <title>[Section title]</title>
+      <pages>
+        <page_ref>page-1</page_ref>
+        <page_ref>page-2</page_ref>
+      </pages>
+      <subsections>
+        <section_ref>section-2</section_ref>
+      </subsections>
+    </section>
+  </sections>
   <pages>
     <page id="page-1">
       <title>[Page title]</title>
@@ -106,6 +131,7 @@ Return your analysis in the following XML format:
       <related_pages>
         <related>page-2</related>
       </related_pages>
+      <parent_section>section-1</parent_section>
     </page>
   </pages>
 </wiki_structure>
@@ -118,7 +144,7 @@ IMPORTANT FORMATTING INSTRUCTIONS:
 - Start directly with <wiki_structure> and end with </wiki_structure>
 
 IMPORTANT:
-1. Create 4-6 pages that would make a concise wiki for this repository
+1. Create 8-12 pages that would make a comprehensive wiki for this repository
 2. Each page should focus on a specific aspect of the codebase (e.g., architecture, key features, setup)
 3. The relevant_files should be actual files from the repository that would be used to generate that page
 4. Return ONLY valid XML with the structure specified above, with no markdown code block delimiters"""
@@ -309,6 +335,38 @@ def _parse_wiki_structure_xml(xml_text: str) -> dict:
     title_el = root.find("title")
     desc_el = root.find("description")
 
+    # Parse sections
+    sections = []
+    root_sections: List[str] = []
+    all_sub_refs: set = set()
+
+    for sec_el in root.iter("section"):
+        sec_id = sec_el.get("id", f"section-{len(sections) + 1}")
+        sec_title = (sec_el.findtext("title") or "").strip()
+        page_refs = [
+            pr.text.strip()
+            for pr in sec_el.findall("pages/page_ref")
+            if pr.text
+        ]
+        sub_refs = [
+            sr.text.strip()
+            for sr in sec_el.findall("subsections/section_ref")
+            if sr.text
+        ]
+        all_sub_refs.update(sub_refs)
+        sections.append({
+            "id": sec_id,
+            "title": sec_title,
+            "pages": page_refs,
+            "subsections": sub_refs if sub_refs else None,
+        })
+
+    # Root sections = those not referenced as subsections of another
+    for sec in sections:
+        if sec["id"] not in all_sub_refs:
+            root_sections.append(sec["id"])
+
+    # Parse pages
     pages = []
     for page_el in root.iter("page"):
         page_id = page_el.get("id", f"page-{len(pages) + 1}")
@@ -340,6 +398,8 @@ def _parse_wiki_structure_xml(xml_text: str) -> dict:
         "title": (title_el.text or "").strip() if title_el is not None else "",
         "description": (desc_el.text or "").strip() if desc_el is not None else "",
         "pages": pages,
+        "sections": sections,
+        "rootSections": root_sections,
     }
 
 
@@ -512,8 +572,8 @@ class WikiGenerator:
             "title": parsed["title"],
             "description": parsed["description"],
             "pages": [],       # will be filled with full page objects
-            "sections": [],
-            "rootSections": [],
+            "sections": parsed.get("sections", []),
+            "rootSections": parsed.get("rootSections", []),
         }
 
         # Step 3 — Generate content for each page (in parallel)
