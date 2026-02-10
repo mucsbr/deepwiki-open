@@ -150,9 +150,13 @@ from api.gitlab_permission import (
 )
 from api.config import GITLAB_URL
 from api.metadata_store import get_all_indexed_projects
+from api.admin import admin_router
 
 # Register GitLab auth routes
 app.include_router(gitlab_auth_router)
+
+# Register Admin routes
+app.include_router(admin_router)
 
 @app.get("/lang/config")
 async def get_lang_config():

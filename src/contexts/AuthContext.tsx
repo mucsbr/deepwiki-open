@@ -7,12 +7,14 @@ interface User {
   username: string;
   name: string;
   avatar_url: string;
+  is_admin: boolean;
 }
 
 interface AuthContextType {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
+  isAdmin: boolean;
   isLoading: boolean;
   login: () => void;
   logout: () => void;
@@ -23,6 +25,7 @@ const AuthContext = createContext<AuthContextType>({
   user: null,
   token: null,
   isAuthenticated: false,
+  isAdmin: false,
   isLoading: true,
   login: () => {},
   logout: () => {},
@@ -86,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchUser]);
 
   const isAuthenticated = !!user && !!token;
+  const isAdmin = !!user?.is_admin;
 
   return (
     <AuthContext.Provider
@@ -93,6 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         token,
         isAuthenticated,
+        isAdmin,
         isLoading,
         login,
         logout,

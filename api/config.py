@@ -53,6 +53,9 @@ JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY', '')
 PERMISSION_CACHE_TTL = int(os.environ.get('PERMISSION_CACHE_TTL', '300'))
 BATCH_INDEX_SCHEDULE = os.environ.get('BATCH_INDEX_SCHEDULE', '')
 
+# Admin settings
+ADMIN_USERNAMES = [u.strip() for u in os.environ.get('ADMIN_USERNAMES', '').split(',') if u.strip()]
+
 # Embedder settings
 EMBEDDER_TYPE = os.environ.get('DEEPWIKI_EMBEDDER_TYPE', 'openai').lower()
 

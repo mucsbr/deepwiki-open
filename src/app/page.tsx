@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { FaWikipediaW, FaGitlab, FaSearch, FaSignOutAlt, FaBookOpen } from 'react-icons/fa';
+import { FaWikipediaW, FaGitlab, FaSearch, FaSignOutAlt, FaBookOpen, FaCog } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
@@ -23,7 +23,7 @@ interface GitLabProject {
 export default function Home() {
   const router = useRouter();
   const { language, setLanguage, messages, supportedLanguages } = useLanguage();
-  const { user, token, isAuthenticated, isLoading: authLoading, login, logout } = useAuth();
+  const { user, token, isAuthenticated, isAdmin, isLoading: authLoading, login, logout } = useAuth();
 
   // Translation function
   const t = (key: string, params: Record<string, string | number> = {}): string => {
@@ -179,6 +179,17 @@ export default function Home() {
                 <option key={key} value={key}>{value}</option>
               ))}
             </select>
+
+            {/* Admin link */}
+            {isAdmin && (
+              <Link
+                href="/admin"
+                title="Admin Dashboard"
+                className="p-2 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
+              >
+                <FaCog />
+              </Link>
+            )}
 
             {/* User avatar + name */}
             <div className="flex items-center gap-2">

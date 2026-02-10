@@ -68,6 +68,10 @@ const nextConfig: NextConfig = {
         destination: `${TARGET_SERVER_BASE_URL}/auth/me`,
       },
       {
+        source: '/api/admin/:path*',
+        destination: `${TARGET_SERVER_BASE_URL}/api/admin/:path*`,
+      },
+      {
         source: '/api/lang/config',
         destination: `${TARGET_SERVER_BASE_URL}/lang/config`,
       },

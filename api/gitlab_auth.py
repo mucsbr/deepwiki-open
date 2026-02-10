@@ -20,6 +20,7 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 
 from api.config import (
+    ADMIN_USERNAMES,
     GITLAB_CLIENT_ID,
     GITLAB_CLIENT_SECRET,
     GITLAB_URL,
@@ -182,4 +183,5 @@ async def get_me(current_user: dict = Depends(get_current_user)):
         "username": current_user["username"],
         "name": current_user["name"],
         "avatar_url": current_user.get("avatar_url", ""),
+        "is_admin": current_user["username"] in ADMIN_USERNAMES,
     }

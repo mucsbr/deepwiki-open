@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 import sys
-from typing import List
+from typing import Callable, List, Optional
 from urllib.parse import quote
 
 import httpx
@@ -146,9 +146,16 @@ class BatchIndexer:
             )
             return False
 
-    async def run(self) -> dict:
+    async def run(
+        self, on_progress: Optional[Callable[[dict], None]] = None
+    ) -> dict:
         """
-        Main entry point: iterate groups → list projects → index each.
+        Main entry point: iterate groups -> list projects -> index each.
+
+        Args:
+            on_progress: Optional callback invoked after each project with
+                         a dict like {"current": n, "total": total,
+                         "current_project": path, "status": "indexing"}.
 
         Returns a summary dict with counts.
         """
@@ -157,25 +164,51 @@ class BatchIndexer:
         skipped = 0
         errors = 0
 
+        # First pass: collect all projects to know the total count
+        all_projects = []
         for group_id in self.group_ids:
             logger.info("Processing group %d ...", group_id)
             projects = await self.list_group_projects(group_id)
             logger.info("Found %d projects in group %d", len(projects), group_id)
+            all_projects.extend(projects)
 
-            for project in projects:
-                total += 1
-                path = project.get("path_with_namespace", "unknown")
+        grand_total = len(all_projects)
+        current = 0
 
-                if not self.should_reindex(project):
-                    logger.info("Skipping (up-to-date): %s", path)
-                    skipped += 1
-                    continue
+        for project in all_projects:
+            total += 1
+            current += 1
+            path = project.get("path_with_namespace", "unknown")
 
-                success = await self.index_project(project)
-                if success:
-                    indexed += 1
-                else:
-                    errors += 1
+            if not self.should_reindex(project):
+                logger.info("Skipping (up-to-date): %s", path)
+                skipped += 1
+                if on_progress:
+                    on_progress(
+                        {
+                            "current": current,
+                            "total": grand_total,
+                            "current_project": path,
+                            "status": "skipped",
+                        }
+                    )
+                continue
+
+            if on_progress:
+                on_progress(
+                    {
+                        "current": current,
+                        "total": grand_total,
+                        "current_project": path,
+                        "status": "indexing",
+                    }
+                )
+
+            success = await self.index_project(project)
+            if success:
+                indexed += 1
+            else:
+                errors += 1
 
         summary = {
             "total_projects": total,
