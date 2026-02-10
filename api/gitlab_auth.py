@@ -131,7 +131,7 @@ async def gitlab_callback(code: str):
         raise HTTPException(status_code=500, detail="GitLab OAuth not configured")
 
     # 1. Exchange code for access_token
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=False) as client:
         token_resp = await client.post(
             f"{GITLAB_URL}/oauth/token",
             data={

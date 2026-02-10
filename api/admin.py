@@ -186,7 +186,7 @@ async def get_groups(_admin: dict = Depends(require_admin)):
         return []
 
     results = []
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=False) as client:
         for gid in group_ids:
             try:
                 resp = await client.get(

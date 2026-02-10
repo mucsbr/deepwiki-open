@@ -87,7 +87,7 @@ async def check_repo_access(
     url = f"{gitlab_url}/api/v4/projects/{encoded_path}"
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(verify=False) as client:
             resp = await client.get(
                 url,
                 headers={"PRIVATE-TOKEN": gitlab_token},
@@ -117,7 +117,7 @@ async def get_user_accessible_projects(
     page = 1
     per_page = 100
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(verify=False) as client:
         while True:
             try:
                 resp = await client.get(

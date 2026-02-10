@@ -44,7 +44,7 @@ class BatchIndexer:
         page = 1
         per_page = 100
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(verify=False) as client:
             while True:
                 try:
                     resp = await client.get(
@@ -148,7 +148,7 @@ class BatchIndexer:
 
     async def fetch_project_by_id(self, project_id: int) -> Optional[dict]:
         """Fetch a single project's info from GitLab by its ID."""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(verify=False) as client:
             try:
                 resp = await client.get(
                     f"{self.gitlab_url}/api/v4/projects/{project_id}",
