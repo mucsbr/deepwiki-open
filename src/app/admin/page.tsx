@@ -14,6 +14,8 @@ import {
   FaPlay,
   FaSearch,
   FaFilter,
+  FaChevronRight,
+  FaChevronDown,
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
@@ -59,6 +61,22 @@ interface SystemConfig {
   admin_usernames: string[];
 }
 
+interface GitLabGroup {
+  id: number;
+  name: string;
+  full_path: string;
+  description: string;
+}
+
+interface GroupProject {
+  id: number;
+  name: string;
+  path_with_namespace: string;
+  last_activity_at: string;
+  is_indexed: boolean;
+  index_status: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -78,6 +96,14 @@ export default function AdminPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
+  // Batch index selection states
+  const [groups, setGroups] = useState<GitLabGroup[]>([]);
+  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
+  const [groupProjects, setGroupProjects] = useState<Record<number, GroupProject[]>>({});
+  const [loadingGroups, setLoadingGroups] = useState<Set<number>>(new Set());
+  const [selectedGroups, setSelectedGroups] = useState<Set<number>>(new Set());
+  const [selectedProjects, setSelectedProjects] = useState<Set<number>>(new Set());
+
   // ---------------------------------------------------------------------------
   // Data fetching
   // ---------------------------------------------------------------------------
@@ -91,17 +117,19 @@ export default function AdminPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const [statsRes, projectsRes, configRes, batchRes] = await Promise.all([
+      const [statsRes, projectsRes, configRes, batchRes, groupsRes] = await Promise.all([
         fetch('/api/admin/stats', { headers }),
         fetch('/api/admin/projects', { headers }),
         fetch('/api/admin/config', { headers }),
         fetch('/api/admin/batch-index/status', { headers }),
+        fetch('/api/admin/groups', { headers }),
       ]);
 
       if (statsRes.ok) setStats(await statsRes.json());
       if (projectsRes.ok) setProjects(await projectsRes.json());
       if (configRes.ok) setConfig(await configRes.json());
       if (batchRes.ok) setBatchStatus(await batchRes.json());
+      if (groupsRes.ok) setGroups(await groupsRes.json());
     } catch (err) {
       console.error('Failed to fetch admin data:', err);
     } finally {
@@ -141,17 +169,121 @@ export default function AdminPage() {
   }, [batchStatus?.running, headers]);
 
   // ---------------------------------------------------------------------------
+  // Group / project selection logic
+  // ---------------------------------------------------------------------------
+
+  const toggleGroupExpand = async (groupId: number) => {
+    const next = new Set(expandedGroups);
+    if (next.has(groupId)) {
+      next.delete(groupId);
+    } else {
+      next.add(groupId);
+      // Fetch projects for this group if not already loaded
+      if (!groupProjects[groupId]) {
+        setLoadingGroups((prev) => new Set(prev).add(groupId));
+        try {
+          const res = await fetch(`/api/admin/groups/${groupId}/projects`, { headers });
+          if (res.ok) {
+            const data: GroupProject[] = await res.json();
+            setGroupProjects((prev) => ({ ...prev, [groupId]: data }));
+          }
+        } catch (err) {
+          console.error(`Failed to fetch projects for group ${groupId}:`, err);
+        } finally {
+          setLoadingGroups((prev) => {
+            const s = new Set(prev);
+            s.delete(groupId);
+            return s;
+          });
+        }
+      }
+    }
+    setExpandedGroups(next);
+  };
+
+  const toggleGroupSelect = (groupId: number) => {
+    const next = new Set(selectedGroups);
+    if (next.has(groupId)) {
+      next.delete(groupId);
+      // Also deselect all projects in this group
+      const gProjects = groupProjects[groupId] || [];
+      const nextProjects = new Set(selectedProjects);
+      gProjects.forEach((p) => nextProjects.delete(p.id));
+      setSelectedProjects(nextProjects);
+    } else {
+      next.add(groupId);
+      // Also select all projects in this group (if loaded)
+      const gProjects = groupProjects[groupId] || [];
+      const nextProjects = new Set(selectedProjects);
+      gProjects.forEach((p) => nextProjects.add(p.id));
+      setSelectedProjects(nextProjects);
+    }
+    setSelectedGroups(next);
+  };
+
+  const toggleProjectSelect = (projectId: number, groupId: number) => {
+    const nextProjects = new Set(selectedProjects);
+    if (nextProjects.has(projectId)) {
+      nextProjects.delete(projectId);
+      // If group was selected, deselect it (partial selection)
+      const nextGroups = new Set(selectedGroups);
+      nextGroups.delete(groupId);
+      setSelectedGroups(nextGroups);
+    } else {
+      nextProjects.add(projectId);
+      // Check if all projects in this group are now selected
+      const gProjects = groupProjects[groupId] || [];
+      const allSelected = gProjects.every((p) => nextProjects.has(p.id));
+      if (allSelected && gProjects.length > 0) {
+        setSelectedGroups((prev) => new Set(prev).add(groupId));
+      }
+    }
+    setSelectedProjects(nextProjects);
+  };
+
+  // Count total selected items
+  const selectedCount = useMemo(() => {
+    // For fully selected groups, count their projects
+    // For individually selected projects not in a selected group, count those too
+    const projectsInSelectedGroups = new Set<number>();
+    selectedGroups.forEach((gid) => {
+      (groupProjects[gid] || []).forEach((p) => projectsInSelectedGroups.add(p.id));
+    });
+    // Add individually selected projects not already covered
+    const allSelected = new Set([...projectsInSelectedGroups, ...selectedProjects]);
+    return allSelected.size;
+  }, [selectedGroups, selectedProjects, groupProjects]);
+
+  // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
 
   const triggerBatchIndex = async () => {
+    // Build the request body from selection
+    const groupIdsToIndex = Array.from(selectedGroups);
+    // Individual projects: those selected but NOT part of a fully selected group
+    const projectsInSelectedGroups = new Set<number>();
+    selectedGroups.forEach((gid) => {
+      (groupProjects[gid] || []).forEach((p) => projectsInSelectedGroups.add(p.id));
+    });
+    const individualProjectIds = Array.from(selectedProjects).filter(
+      (pid) => !projectsInSelectedGroups.has(pid)
+    );
+
+    const body: { group_ids?: number[]; project_ids?: number[] } = {};
+    if (groupIdsToIndex.length > 0) body.group_ids = groupIdsToIndex;
+    if (individualProjectIds.length > 0) body.project_ids = individualProjectIds;
+
     try {
       const res = await fetch('/api/admin/batch-index', {
         method: 'POST',
         headers,
+        body: JSON.stringify(Object.keys(body).length > 0 ? body : null),
       });
       if (res.ok) {
-        setBatchStatus((prev) => (prev ? { ...prev, running: true, progress: { status: 'starting' } } : prev));
+        setBatchStatus((prev) =>
+          prev ? { ...prev, running: true, progress: { status: 'starting' } } : prev
+        );
       } else {
         const err = await res.json();
         alert(err.detail || 'Failed to start batch index');
@@ -162,7 +294,7 @@ export default function AdminPage() {
   };
 
   // ---------------------------------------------------------------------------
-  // Filtered projects
+  // Filtered projects (Area 2)
   // ---------------------------------------------------------------------------
 
   const filteredProjects = useMemo(() => {
@@ -177,7 +309,6 @@ export default function AdminPage() {
     return list;
   }, [projects, statusFilter, searchQuery]);
 
-  // Available statuses for filter
   const availableStatuses = useMemo(() => {
     const s = new Set(projects.map((p) => p.status));
     return Array.from(s).sort();
@@ -272,7 +403,6 @@ export default function AdminPage() {
               Indexed Projects ({filteredProjects.length})
             </h2>
             <div className="flex items-center gap-2">
-              {/* Search */}
               <div className="relative">
                 <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
                 <input
@@ -283,7 +413,6 @@ export default function AdminPage() {
                   className="pl-8 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
                 />
               </div>
-              {/* Status filter */}
               <div className="relative flex items-center">
                 <FaFilter className="absolute left-2.5 text-[var(--muted)] text-xs pointer-events-none" />
                 <select
@@ -293,16 +422,13 @@ export default function AdminPage() {
                 >
                   <option value="all">All</option>
                   {availableStatuses.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
+                    <option key={s} value={s}>{s}</option>
                   ))}
                 </select>
               </div>
             </div>
           </div>
 
-          {/* Table */}
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -324,9 +450,7 @@ export default function AdminPage() {
                   filteredProjects.map((p) => (
                     <tr key={p.path} className="border-b border-[var(--border-color)]/50 hover:bg-[var(--accent-primary)]/5">
                       <td className="py-2 pr-4 font-medium text-[var(--foreground)]">{p.path}</td>
-                      <td className="py-2 pr-4">
-                        <StatusBadge status={p.status} />
-                      </td>
+                      <td className="py-2 pr-4"><StatusBadge status={p.status} /></td>
                       <td className="py-2 pr-4 text-[var(--muted)]">
                         {p.indexed_at ? new Date(p.indexed_at).toLocaleString() : '-'}
                       </td>
@@ -342,19 +466,103 @@ export default function AdminPage() {
         </section>
 
         {/* ================================================================ */}
-        {/* Area 3: Batch Index */}
+        {/* Area 3: Batch Index — Group + Project Selection */}
         {/* ================================================================ */}
         <section className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-6">
           <h2 className="text-lg font-bold text-[var(--foreground)] mb-4">Batch Indexing</h2>
 
-          <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+          {/* Group list */}
+          {groups.length === 0 ? (
+            <p className="text-sm text-[var(--muted)]">No groups configured (set GITLAB_BATCH_GROUPS).</p>
+          ) : (
+            <div className="space-y-1 mb-4">
+              {groups.map((group) => {
+                const isExpanded = expandedGroups.has(group.id);
+                const isGroupSelected = selectedGroups.has(group.id);
+                const gProjects = groupProjects[group.id] || [];
+                const isLoadingGroup = loadingGroups.has(group.id);
+
+                // Determine indeterminate state: some but not all projects selected
+                const selectedInGroup = gProjects.filter((p) => selectedProjects.has(p.id)).length;
+                const isIndeterminate = !isGroupSelected && selectedInGroup > 0;
+
+                return (
+                  <div key={group.id}>
+                    {/* Group row */}
+                    <div className="flex items-center gap-2 p-2 rounded-md hover:bg-[var(--accent-primary)]/5">
+                      <button
+                        onClick={() => toggleGroupExpand(group.id)}
+                        className="p-1 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
+                      >
+                        {isExpanded ? <FaChevronDown className="text-xs" /> : <FaChevronRight className="text-xs" />}
+                      </button>
+                      <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={isGroupSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = isIndeterminate;
+                          }}
+                          onChange={() => toggleGroupSelect(group.id)}
+                          className="accent-[var(--accent-primary)]"
+                        />
+                        <span className="font-medium text-sm text-[var(--foreground)]">{group.name}</span>
+                        <span className="text-xs text-[var(--muted)]">({group.full_path})</span>
+                        {gProjects.length > 0 && (
+                          <span className="text-xs text-[var(--muted)]">
+                            &middot; {gProjects.length} projects
+                          </span>
+                        )}
+                      </label>
+                    </div>
+
+                    {/* Projects under this group */}
+                    {isExpanded && (
+                      <div className="ml-10 border-l border-[var(--border-color)] pl-3 pb-1">
+                        {isLoadingGroup ? (
+                          <p className="text-xs text-[var(--muted)] py-2">Loading projects...</p>
+                        ) : gProjects.length === 0 ? (
+                          <p className="text-xs text-[var(--muted)] py-2">No projects in this group.</p>
+                        ) : (
+                          gProjects.map((p) => (
+                            <div
+                              key={p.id}
+                              className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--accent-primary)]/5"
+                            >
+                              <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedProjects.has(p.id)}
+                                  onChange={() => toggleProjectSelect(p.id, group.id)}
+                                  className="accent-[var(--accent-primary)]"
+                                />
+                                <span className="text-sm text-[var(--foreground)]">{p.path_with_namespace}</span>
+                              </label>
+                              <IndexStatusBadge status={p.index_status} />
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Action bar */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-3 border-t border-[var(--border-color)]">
             <button
               onClick={triggerBatchIndex}
-              disabled={batchStatus?.running}
+              disabled={batchStatus?.running || selectedCount === 0}
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent-primary)] text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <FaPlay className="text-xs" />
-              {batchStatus?.running ? 'Running...' : 'Trigger Batch Index'}
+              {batchStatus?.running
+                ? 'Running...'
+                : selectedCount > 0
+                  ? `Index Selected (${selectedCount})`
+                  : 'Select projects to index'}
             </button>
 
             {stats?.last_batch_run && (
@@ -464,6 +672,13 @@ function StatusBadge({ status }: { status: string }) {
   };
   const cls = colors[status] || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400';
   return <span className={`px-2 py-0.5 rounded text-xs font-medium ${cls}`}>{status}</span>;
+}
+
+function IndexStatusBadge({ status }: { status: string | null }) {
+  if (!status) {
+    return <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">new</span>;
+  }
+  return <StatusBadge status={status} />;
 }
 
 function ConfigItem({ label, value }: { label: string; value: string }) {

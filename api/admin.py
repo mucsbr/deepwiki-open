@@ -11,9 +11,11 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from typing import List, Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from api.config import (
     ADMIN_USERNAMES,
@@ -23,7 +25,7 @@ from api.config import (
     PERMISSION_CACHE_TTL,
 )
 from api.gitlab_auth import get_current_user
-from api.metadata_store import get_all_indexed_projects
+from api.metadata_store import get_all_indexed_projects, get_project_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +41,16 @@ _batch_status: dict = {
     "last_result": {},
     "last_run": None,
 }
+
+
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
+
+
+class BatchIndexRequest(BaseModel):
+    group_ids: Optional[List[int]] = None
+    project_ids: Optional[List[int]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +83,13 @@ def _dir_size_mb(path: str) -> float:
             except OSError:
                 pass
     return round(total / (1024 * 1024), 2)
+
+
+def _get_configured_group_ids() -> List[int]:
+    """Parse GITLAB_BATCH_GROUPS into a list of integer group IDs."""
+    if not GITLAB_BATCH_GROUPS:
+        return []
+    return [int(g.strip()) for g in GITLAB_BATCH_GROUPS.split(",") if g.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -146,25 +165,135 @@ async def get_config(_admin: dict = Depends(require_admin)):
     }
 
 
+# ---------------------------------------------------------------------------
+# Group / project browsing endpoints
+# ---------------------------------------------------------------------------
+
+
+@admin_router.get("/groups")
+async def get_groups(_admin: dict = Depends(require_admin)):
+    """Return configured GitLab groups with their name and path."""
+    from api.config import GITLAB_SERVICE_TOKEN
+
+    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
+        )
+
+    group_ids = _get_configured_group_ids()
+    if not group_ids:
+        return []
+
+    results = []
+    async with httpx.AsyncClient() as client:
+        for gid in group_ids:
+            try:
+                resp = await client.get(
+                    f"{GITLAB_URL.rstrip('/')}/api/v4/groups/{gid}",
+                    headers={"PRIVATE-TOKEN": GITLAB_SERVICE_TOKEN},
+                    timeout=15.0,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    results.append(
+                        {
+                            "id": data["id"],
+                            "name": data.get("name", ""),
+                            "full_path": data.get("full_path", ""),
+                            "description": data.get("description", ""),
+                        }
+                    )
+                else:
+                    logger.warning("Failed to fetch group %d: %s", gid, resp.text)
+            except Exception as exc:
+                logger.error("Error fetching group %d: %s", gid, exc)
+
+    return results
+
+
+@admin_router.get("/groups/{group_id}/projects")
+async def get_group_projects(
+    group_id: int,
+    _admin: dict = Depends(require_admin),
+):
+    """Return all projects in a GitLab group with their index status."""
+    from api.config import GITLAB_SERVICE_TOKEN
+
+    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
+        )
+
+    from api.batch_indexer import BatchIndexer
+
+    indexer = BatchIndexer(
+        gitlab_url=GITLAB_URL,
+        service_token=GITLAB_SERVICE_TOKEN,
+        group_ids=[group_id],
+    )
+    projects = await indexer.list_group_projects(group_id)
+
+    result = []
+    for p in projects:
+        path = p.get("path_with_namespace", "")
+        meta = get_project_metadata(path)
+        result.append(
+            {
+                "id": p.get("id"),
+                "name": p.get("name", ""),
+                "path_with_namespace": path,
+                "last_activity_at": p.get("last_activity_at", ""),
+                "is_indexed": meta is not None and meta.get("status") == "indexed",
+                "index_status": meta.get("status") if meta else None,
+            }
+        )
+
+    result.sort(key=lambda x: x["path_with_namespace"])
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Batch index endpoints
+# ---------------------------------------------------------------------------
+
+
 @admin_router.post("/batch-index")
-async def trigger_batch_index(_admin: dict = Depends(require_admin)):
-    """Trigger a batch index run in the background."""
+async def trigger_batch_index(
+    body: Optional[BatchIndexRequest] = None,
+    _admin: dict = Depends(require_admin),
+):
+    """Trigger a batch index run in the background.
+
+    Accepts optional group_ids and project_ids in the request body.
+    If neither is provided, falls back to indexing all configured groups.
+    """
     if _batch_status["running"]:
         raise HTTPException(status_code=409, detail="Batch index is already running")
 
-    from api.config import GITLAB_BATCH_GROUPS, GITLAB_SERVICE_TOKEN, GITLAB_URL
+    from api.config import GITLAB_SERVICE_TOKEN, GITLAB_URL
 
-    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN or not GITLAB_BATCH_GROUPS:
+    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
         raise HTTPException(
             status_code=400,
-            detail="Batch indexing requires GITLAB_URL, GITLAB_SERVICE_TOKEN, and GITLAB_BATCH_GROUPS to be set",
+            detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
         )
 
-    group_ids = [
-        int(g.strip()) for g in GITLAB_BATCH_GROUPS.split(",") if g.strip()
-    ]
-    if not group_ids:
-        raise HTTPException(status_code=400, detail="No valid group IDs configured")
+    selected_group_ids = (body.group_ids if body and body.group_ids else None)
+    selected_project_ids = (body.project_ids if body and body.project_ids else None)
+
+    # Determine if this is a selective run or full run
+    is_selective = bool(selected_group_ids or selected_project_ids)
+
+    if not is_selective:
+        # Fall back to all configured groups
+        all_group_ids = _get_configured_group_ids()
+        if not all_group_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="No groups selected and GITLAB_BATCH_GROUPS is not configured",
+            )
 
     # Progress callback
     def on_progress(info: dict) -> None:
@@ -177,12 +306,24 @@ async def trigger_batch_index(_admin: dict = Depends(require_admin)):
         _batch_status["running"] = True
         _batch_status["progress"] = {"status": "starting"}
         try:
-            indexer = BatchIndexer(
-                gitlab_url=GITLAB_URL,
-                service_token=GITLAB_SERVICE_TOKEN,
-                group_ids=group_ids,
-            )
-            result = await indexer.run(on_progress=on_progress)
+            if is_selective:
+                indexer = BatchIndexer(
+                    gitlab_url=GITLAB_URL,
+                    service_token=GITLAB_SERVICE_TOKEN,
+                    group_ids=selected_group_ids or [],
+                )
+                result = await indexer.run_selected(
+                    group_ids=selected_group_ids,
+                    project_ids=selected_project_ids,
+                    on_progress=on_progress,
+                )
+            else:
+                indexer = BatchIndexer(
+                    gitlab_url=GITLAB_URL,
+                    service_token=GITLAB_SERVICE_TOKEN,
+                    group_ids=all_group_ids,
+                )
+                result = await indexer.run(on_progress=on_progress)
             _batch_status["last_result"] = result
             _batch_status["last_run"] = datetime.now(timezone.utc).isoformat()
         except Exception as exc:

@@ -146,6 +146,113 @@ class BatchIndexer:
             )
             return False
 
+    async def fetch_project_by_id(self, project_id: int) -> Optional[dict]:
+        """Fetch a single project's info from GitLab by its ID."""
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.get(
+                    f"{self.gitlab_url}/api/v4/projects/{project_id}",
+                    headers={"PRIVATE-TOKEN": self.service_token},
+                    timeout=30.0,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.error(
+                    "Error fetching project %d: %s", project_id, resp.text
+                )
+            except Exception as exc:
+                logger.error("Error fetching project %d: %s", project_id, exc)
+        return None
+
+    async def run_selected(
+        self,
+        group_ids: Optional[List[int]] = None,
+        project_ids: Optional[List[int]] = None,
+        on_progress: Optional[Callable[[dict], None]] = None,
+    ) -> dict:
+        """
+        Index only selected groups and/or individual projects.
+
+        Args:
+            group_ids: Groups whose projects should be fully indexed.
+            project_ids: Individual project IDs to index.
+            on_progress: Optional progress callback.
+
+        Returns a summary dict with counts.
+        """
+        total = 0
+        indexed = 0
+        skipped = 0
+        errors = 0
+
+        # Collect projects from selected groups
+        all_projects: List[dict] = []
+        seen_ids: set = set()
+
+        for gid in (group_ids or []):
+            logger.info("Processing group %d ...", gid)
+            projects = await self.list_group_projects(gid)
+            for p in projects:
+                pid = p.get("id")
+                if pid not in seen_ids:
+                    seen_ids.add(pid)
+                    all_projects.append(p)
+
+        # Fetch individual projects
+        for pid in (project_ids or []):
+            if pid not in seen_ids:
+                proj = await self.fetch_project_by_id(pid)
+                if proj:
+                    seen_ids.add(pid)
+                    all_projects.append(proj)
+
+        grand_total = len(all_projects)
+        current = 0
+
+        for project in all_projects:
+            total += 1
+            current += 1
+            path = project.get("path_with_namespace", "unknown")
+
+            if not self.should_reindex(project):
+                logger.info("Skipping (up-to-date): %s", path)
+                skipped += 1
+                if on_progress:
+                    on_progress(
+                        {
+                            "current": current,
+                            "total": grand_total,
+                            "current_project": path,
+                            "status": "skipped",
+                        }
+                    )
+                continue
+
+            if on_progress:
+                on_progress(
+                    {
+                        "current": current,
+                        "total": grand_total,
+                        "current_project": path,
+                        "status": "indexing",
+                    }
+                )
+
+            success = await self.index_project(project)
+            if success:
+                indexed += 1
+            else:
+                errors += 1
+
+        summary = {
+            "total_projects": total,
+            "indexed": indexed,
+            "skipped": skipped,
+            "errors": errors,
+        }
+        logger.info("Batch indexing (selected) complete: %s", summary)
+        return summary
+
     async def run(
         self, on_progress: Optional[Callable[[dict], None]] = None
     ) -> dict:
