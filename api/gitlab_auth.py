@@ -115,7 +115,7 @@ async def gitlab_login():
     params = urlencode(
         {
             "client_id": GITLAB_CLIENT_ID,
-            "redirect_uri": f"{FRONTEND_ORIGIN}/auth/callback",
+            "redirect_uri": f"{FRONTEND_ORIGIN}/auth/gitlab/callback",
             "response_type": "code",
             "scope": "read_user read_api",
         }
@@ -139,7 +139,7 @@ async def gitlab_callback(code: str):
                 "client_secret": GITLAB_CLIENT_SECRET,
                 "code": code,
                 "grant_type": "authorization_code",
-                "redirect_uri": f"{FRONTEND_ORIGIN}/auth/callback",
+                "redirect_uri": f"{FRONTEND_ORIGIN}/auth/gitlab/callback",
             },
         )
         if token_resp.status_code != 200:
