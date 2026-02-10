@@ -85,6 +85,12 @@ async def chat_completions_stream(request: ChatCompletionRequest):
             request.provider = configs.get("default_provider", "openai")
             logger.info(f"Empty provider in request, falling back to: {request.provider}")
 
+        # Fallback to configured default model if model is empty
+        if not request.model:
+            provider_cfg = configs.get("providers", {}).get(request.provider, {})
+            request.model = provider_cfg.get("default_model", "")
+            logger.info(f"Empty model in request, falling back to: {request.model}")
+
         # Check if request contains very large input
         input_too_large = False
         if request.messages and len(request.messages) > 0:
