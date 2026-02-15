@@ -150,16 +150,29 @@ IMPORTANT:
 4. Return ONLY valid XML with the structure specified above, with no markdown code block delimiters"""
 
 
-def _page_content_prompt(page_title: str, file_paths: List[str], language: str) -> str:
+def _page_content_prompt(
+    page_title: str, file_paths: List[str], language: str, rag_context: str = "",
+) -> str:
     lang_name = LANGUAGE_NAMES.get(language, "English")
     file_list = "\n".join(f"- {p}" for p in file_paths)
+
+    context_block = ""
+    if rag_context.strip():
+        context_block = f"""
+<START_OF_CONTEXT>
+{rag_context}
+<END_OF_CONTEXT>
+
+"""
+
     return f"""You are an expert technical writer and software architect.
 Your task is to generate a comprehensive and accurate technical wiki page in Markdown format about a specific feature, system, or module within a given software project.
 
 You will be given:
 1. The "[WIKI_PAGE_TOPIC]" for the page you need to create.
 2. A list of "[RELEVANT_SOURCE_FILES]" from the project that you MUST use as the sole basis for the content. You have access to the full content of these files. You MUST use AT LEAST 5 relevant source files for comprehensive coverage - if fewer are provided, search for additional related files in the codebase.
-
+3. Retrieved code context from the repository to help you write accurate content.
+{context_block}
 CRITICAL STARTING INSTRUCTION:
 The very first thing on the page MUST be a `<details>` block listing ALL the `[RELEVANT_SOURCE_FILES]` you used to generate the content. There MUST be AT LEAST 5 source files listed - if fewer were provided, you MUST find additional related files to include.
 Format it exactly like this:
@@ -559,6 +572,21 @@ class WikiGenerator:
         if not file_tree:
             raise ValueError("Repository file tree is empty")
 
+        # Step 1.5 — Initialize RAG retriever (loads existing embeddings)
+        _progress("preparing RAG retriever")
+        rag_instance = None
+        try:
+            from api.rag import RAG
+            rag_instance = RAG(provider=self.provider, model=self.model)
+            rag_instance.prepare_retriever(
+                repo_url, repo_type, access_token,
+            )
+            logger.info("RAG retriever ready with %d documents",
+                        len(rag_instance.transformed_docs))
+        except Exception as exc:
+            logger.warning("RAG init failed, will generate pages without context: %s", exc)
+            rag_instance = None
+
         # Step 2 — Generate wiki structure via LLM
         _progress("generating wiki structure")
         structure_prompt = _wiki_structure_prompt(
@@ -582,8 +610,30 @@ class WikiGenerator:
         _progress(f"generating {total_pages} pages in parallel")
 
         async def _generate_one(idx: int, page_stub: dict) -> dict:
+            # Retrieve relevant code context via RAG
+            rag_context = ""
+            if rag_instance is not None:
+                try:
+                    query = f"{page_stub['title']} " + " ".join(page_stub["filePaths"][:5])
+                    retrieved = rag_instance(query, language=self.language)
+                    if retrieved and retrieved[0].documents:
+                        docs_by_file: Dict[str, List[str]] = {}
+                        for doc in retrieved[0].documents:
+                            fp = doc.meta_data.get("file_path", "unknown")
+                            if fp not in docs_by_file:
+                                docs_by_file[fp] = []
+                            docs_by_file[fp].append(doc.text)
+                        parts = []
+                        for fp, texts in docs_by_file.items():
+                            parts.append(f"## File Path: {fp}\n\n" + "\n\n".join(texts))
+                        rag_context = "\n\n----------\n\n".join(parts)
+                except Exception as exc:
+                    logger.warning("RAG retrieval failed for page '%s': %s",
+                                   page_stub["title"], exc)
+
             page_prompt = _page_content_prompt(
                 page_stub["title"], page_stub["filePaths"], self.language,
+                rag_context=rag_context,
             )
             content = await _call_llm(self.provider, self.model, page_prompt)
             logger.info(
