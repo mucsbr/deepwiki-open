@@ -225,9 +225,34 @@ Remember:
 # LLM call helper
 # ---------------------------------------------------------------------------
 
-async def _call_llm(provider: str, model: str, prompt: str) -> str:
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate (words-based, ~1.3 tokens per word)."""
+    return int(len(text.split()) * 1.3)
+
+
+async def _call_llm(provider: str, model: str, prompt: str, label: str = "") -> str:
     """Call an LLM and return the full text response (non-streaming)."""
 
+    est_tokens = _estimate_tokens(prompt)
+    logger.info(
+        "[_call_llm] %s | provider=%s model=%s | prompt_chars=%d est_tokens=%d",
+        label or "unnamed", provider, model, len(prompt), est_tokens,
+    )
+
+    try:
+        return await _call_llm_inner(provider, model, prompt, label)
+    except Exception as exc:
+        logger.error(
+            "[_call_llm] FAILED %s | provider=%s model=%s | "
+            "prompt_chars=%d est_tokens=%d | error=%s: %s",
+            label or "unnamed", provider, model, len(prompt), est_tokens,
+            type(exc).__name__, exc,
+        )
+        raise
+
+
+async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "") -> str:
+    """Actual LLM call implementation."""
     config = get_model_config(provider, model)
     model_kwargs_cfg = config["model_kwargs"]
 
@@ -592,7 +617,10 @@ class WikiGenerator:
         structure_prompt = _wiki_structure_prompt(
             owner, repo, file_tree, readme, self.language,
         )
-        structure_response = await _call_llm(self.provider, self.model, structure_prompt)
+        structure_response = await _call_llm(
+            self.provider, self.model, structure_prompt,
+            label=f"wiki_structure:{owner}/{repo}",
+        )
         parsed = _parse_wiki_structure_xml(structure_response)
 
         wiki_structure = {
@@ -631,14 +659,22 @@ class WikiGenerator:
                     logger.warning("RAG retrieval failed for page '%s': %s",
                                    page_stub["title"], exc)
 
+            logger.info(
+                "[WikiGenerator] %s/%s: page %d/%d RAG context chars=%d for '%s'",
+                owner, repo, idx, total_pages, len(rag_context), page_stub["title"],
+            )
+
             page_prompt = _page_content_prompt(
                 page_stub["title"], page_stub["filePaths"], self.language,
                 rag_context=rag_context,
             )
-            content = await _call_llm(self.provider, self.model, page_prompt)
+            content = await _call_llm(
+                self.provider, self.model, page_prompt,
+                label=f"page:{owner}/{repo}:{page_stub['title']}",
+            )
             logger.info(
-                "[WikiGenerator] %s/%s: page %d/%d done: %s",
-                owner, repo, idx, total_pages, page_stub["title"],
+                "[WikiGenerator] %s/%s: page %d/%d done: %s (response chars=%d)",
+                owner, repo, idx, total_pages, page_stub["title"], len(content),
             )
             return {
                 "id": page_stub["id"],
