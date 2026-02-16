@@ -178,9 +178,11 @@ class BatchIndexer:
                     "status": "generating_wiki",
                 })
 
-            # Derive owner / repo from path_with_namespace
+            # Derive owner / repo from path_with_namespace.
+            # For nested groups (e.g. "bas/rpc/aggregator"), the owner is
+            # the full group path ("bas/rpc") and the repo is the last segment.
             parts = path_with_ns.split("/")
-            owner = parts[0] if len(parts) >= 2 else path_with_ns
+            owner = "/".join(parts[:-1]) if len(parts) >= 2 else path_with_ns
             repo_name = parts[-1] if len(parts) >= 2 else path_with_ns
 
             default_provider = configs.get("default_provider", "openai")

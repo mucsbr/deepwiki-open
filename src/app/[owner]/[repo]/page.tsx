@@ -180,9 +180,12 @@ export default function RepoWikiPage() {
   const params = useParams();
   const searchParams = useSearchParams();
 
-  // Extract owner and repo from route params
-  const owner = params.owner as string;
-  const repo = params.repo as string;
+  // Extract owner and repo from route params.
+  // For nested GitLab groups the middleware rewrites multi-segment paths
+  // (e.g. /bas/rpc/aggregator → /bas%2Frpc/aggregator) so the owner
+  // may be URL-encoded; decode it to get the original group path.
+  const owner = decodeURIComponent(params.owner as string);
+  const repo = decodeURIComponent(params.repo as string);
 
   // Extract tokens from search params
   const token = searchParams.get('token') || '';

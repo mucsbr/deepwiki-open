@@ -711,7 +711,9 @@ class WikiGenerator:
         }
 
         os.makedirs(WIKI_CACHE_DIR, exist_ok=True)
-        filename = f"deepwiki_cache_{repo_type}_{owner}_{repo}_{self.language}.json"
+        # Encode "/" as "--" for nested GitLab group owners (e.g. "bas/rpc" → "bas--rpc")
+        safe_owner = owner.replace("/", "--")
+        filename = f"deepwiki_cache_{repo_type}_{safe_owner}_{repo}_{self.language}.json"
         cache_path = os.path.join(WIKI_CACHE_DIR, filename)
 
         with open(cache_path, "w", encoding="utf-8") as f:

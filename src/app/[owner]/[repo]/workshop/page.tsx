@@ -42,9 +42,9 @@ export default function WorkshopPage() {
   const params = useParams();
   const searchParams = useSearchParams();
 
-  // Extract owner and repo from route params
-  const owner = params.owner as string;
-  const repo = params.repo as string;
+  // Extract owner and repo from route params (decode for nested GitLab groups)
+  const owner = decodeURIComponent(params.owner as string);
+  const repo = decodeURIComponent(params.repo as string);
 
   // Extract tokens from search params
   const token = searchParams.get('token') || '';

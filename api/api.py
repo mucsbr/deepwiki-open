@@ -406,8 +406,13 @@ WIKI_CACHE_DIR = os.path.join(get_adalflow_default_root_path(), "wikicache")
 os.makedirs(WIKI_CACHE_DIR, exist_ok=True)
 
 def get_wiki_cache_path(owner: str, repo: str, repo_type: str, language: str) -> str:
-    """Generates the file path for a given wiki cache."""
-    filename = f"deepwiki_cache_{repo_type}_{owner}_{repo}_{language}.json"
+    """Generates the file path for a given wiki cache.
+
+    For nested GitLab group owners (e.g. "bas/rpc"), the ``/`` is encoded as
+    ``--`` in the filename so it remains a valid path component.
+    """
+    safe_owner = owner.replace("/", "--")
+    filename = f"deepwiki_cache_{repo_type}_{safe_owner}_{repo}_{language}.json"
     return os.path.join(WIKI_CACHE_DIR, filename)
 
 async def read_wiki_cache(owner: str, repo: str, repo_type: str, language: str) -> Optional[WikiCacheData]:
@@ -737,9 +742,11 @@ async def get_processed_projects():
                     # Expecting repo_type_owner_repo_language
                     # Example: deepwiki_cache_github_AsyncFuncAI_deepwiki-open_en.json
                     # parts = [github, AsyncFuncAI, deepwiki-open, en]
+                    # For nested GitLab groups, owner may contain "--" which
+                    # encodes "/" (e.g. "bas--rpc" → "bas/rpc").
                     if len(parts) >= 4:
                         repo_type = parts[0]
-                        owner = parts[1]
+                        owner = parts[1].replace("--", "/")
                         language = parts[-1] # language is the last part
                         repo = "_".join(parts[2:-1]) # repo can contain underscores
 
