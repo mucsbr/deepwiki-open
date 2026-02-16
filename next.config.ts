@@ -16,21 +16,23 @@ const nextConfig: NextConfig = {
         ...config.resolve.fallback,
         fs: false,
       };
-    }
-    // Optimize bundle size
-    config.optimization = {
-      ...config.optimization,
-      splitChunks: {
-        chunks: 'all',
-        cacheGroups: {
-          vendor: {
-            test: /[\\/]node_modules[\\/]/,
-            name: 'vendors',
-            chunks: 'all',
+      // Optimize client-side bundle size only; applying splitChunks to the
+      // server build pulls browser-only libs (mermaid, etc.) into the server
+      // vendor chunk, causing "self is not defined" at build time.
+      config.optimization = {
+        ...config.optimization,
+        splitChunks: {
+          chunks: 'all',
+          cacheGroups: {
+            vendor: {
+              test: /[\\/]node_modules[\\/]/,
+              name: 'vendors',
+              chunks: 'all',
+            },
           },
         },
-      },
-    };
+      };
+    }
     return config;
   },
   async rewrites() {
