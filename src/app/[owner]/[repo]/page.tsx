@@ -195,7 +195,7 @@ export default function RepoWikiPage() {
   const modelParam = searchParams.get('model') || '';
   const isCustomModelParam = searchParams.get('is_custom_model') === 'true';
   const customModelParam = searchParams.get('custom_model') || '';
-  const language = searchParams.get('language') || 'en';
+  const language = searchParams.get('language') || 'zh';
   const repoHost = (() => {
     if (!repoUrl) return '';
     try {

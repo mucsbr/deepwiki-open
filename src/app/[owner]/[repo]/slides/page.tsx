@@ -64,7 +64,7 @@ export default function SlidesPage() {
   const modelParam = searchParams.get('model') || '';
   const isCustomModelParam = searchParams.get('is_custom_model') === 'true';
   const customModelParam = searchParams.get('custom_model') || '';
-  const language = searchParams.get('language') || 'en';
+  const language = searchParams.get('language') || 'zh';
 
   // Import language context for translations
   const { messages } = useLanguage();

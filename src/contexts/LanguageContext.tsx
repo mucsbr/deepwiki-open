@@ -15,55 +15,16 @@ type LanguageContextType = {
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
-  // Initialize with 'en' or get from localStorage if available
-  const [language, setLanguageState] = useState<string>('en');
+  // Initialize with 'zh'
+  const [language, setLanguageState] = useState<string>('zh');
   const [messages, setMessages] = useState<Messages>({});
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [supportedLanguages, setSupportedLanguages] = useState({})
-  const [defaultLanguage, setDefaultLanguage] = useState('en')
+  const [defaultLanguage, setDefaultLanguage] = useState('zh')
 
-  // Helper function to detect browser language
+  // Always use zh as the default language
   const detectBrowserLanguage = (): string => {
-    try {
-      if (typeof window === 'undefined' || typeof navigator === 'undefined') {
-        return 'en'; // Default to English on server-side
-      }
-
-      // Get browser language (navigator.language returns full locale like 'en-US')
-      const browserLang = navigator.language || (navigator as any).userLanguage || '';
-      console.log('Detected browser language:', browserLang);
-
-      if (!browserLang) {
-        return 'en'; // Default to English if browser language is not available
-      }
-
-      // Extract the language code (first 2 characters)
-      const langCode = browserLang.split('-')[0].toLowerCase();
-      console.log('Extracted language code:', langCode);
-
-      // Check if the detected language is supported
-      if (locales.includes(langCode as any)) {
-        console.log('Language supported, using:', langCode);
-        return langCode;
-      }
-
-      // Special case for Chinese variants
-      if (langCode === 'zh') {
-        console.log('Chinese language detected');
-        // Check for traditional Chinese variants
-        if (browserLang.includes('TW') || browserLang.includes('HK')) {
-          console.log('Traditional Chinese variant detected');
-          return 'zh'; // Use Mandarin for traditional Chinese
-        }
-        return 'zh'; // Use Mandarin for simplified Chinese
-      }
-
-      console.log('Language not supported, defaulting to English');
-      return 'en'; // Default to English if not supported
-    } catch (error) {
-      console.error('Error detecting browser language:', error);
-      return 'en'; // Default to English on error
-    }
+    return 'zh';
   };
 
   useEffect(() => {
@@ -92,7 +53,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
           "ru": "Русский (Russian)"
         };
         setSupportedLanguages(defaultSupportedLanguages);
-        setDefaultLanguage("en");
+        setDefaultLanguage("zh");
       }
     }
     getSupportedLanguages();
@@ -117,7 +78,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
             }
           } else {
             console.log('Running on server-side, using default language');
-            storedLanguage = 'en';
+            storedLanguage = 'zh';
           }
     
           console.log('Supported languages loaded, validating language:', storedLanguage);
@@ -136,10 +97,10 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
           }
         } catch (error) {
           console.error('Failed to load language:', error);
-          // Fallback to English
-          console.log('Falling back to English due to error');
-          const enMessages = (await import('../messages/en.json')).default;
-          setMessages(enMessages);
+          // Fallback to Chinese
+          console.log('Falling back to Chinese due to error');
+          const zhMessages = (await import('../messages/zh.json')).default;
+          setMessages(zhMessages);
         } finally {
           setIsLoading(false);
         }

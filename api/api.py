@@ -418,14 +418,24 @@ def get_wiki_cache_path(owner: str, repo: str, repo_type: str, language: str) ->
 async def read_wiki_cache(owner: str, repo: str, repo_type: str, language: str) -> Optional[WikiCacheData]:
     """Reads wiki cache data from the file system."""
     cache_path = get_wiki_cache_path(owner, repo, repo_type, language)
+    logger.info(f"Looking for wiki cache at: {cache_path}")
     if os.path.exists(cache_path):
         try:
             with open(cache_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                return WikiCacheData(**data)
+                result = WikiCacheData(**data)
+                logger.info(f"Wiki cache loaded successfully: {cache_path} (pages={len(result.generated_pages)})")
+                return result
         except Exception as e:
             logger.error(f"Error reading wiki cache from {cache_path}: {e}")
             return None
+    else:
+        # List existing cache files to help debug filename mismatch
+        try:
+            existing = [f for f in os.listdir(WIKI_CACHE_DIR) if f.startswith("deepwiki_cache_")]
+            logger.warning(f"Wiki cache NOT found at: {cache_path}. Existing files ({len(existing)}): {existing[:10]}")
+        except Exception:
+            logger.warning(f"Wiki cache NOT found at: {cache_path}")
     return None
 
 async def save_wiki_cache(data: WikiCacheRequest) -> bool:

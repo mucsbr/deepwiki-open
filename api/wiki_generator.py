@@ -544,7 +544,7 @@ class WikiGenerator:
         self,
         provider: str,
         model: Optional[str] = None,
-        language: str = "en",
+        language: str = "zh",
     ):
         # Fall back to configured defaults
         self.provider = provider or configs.get("default_provider", "openai")
