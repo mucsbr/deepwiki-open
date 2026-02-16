@@ -8,9 +8,8 @@ FROM node:20-alpine3.22 AS node_base
 FROM node_base AS node_deps
 WORKDIR /app
 COPY package.json package-lock.json ./
+ENV SHARP_DIST_BASE_URL=https://npmmirror.com/mirrors/sharp-libvips/
 RUN npm config set registry https://registry.npmmirror.com && \
-    npm config set sharp_binary_host "https://npmmirror.com/mirrors/sharp" && \
-    npm config set sharp_libvips_binary_host "https://npmmirror.com/mirrors/sharp-libvips" && \
     npm ci --legacy-peer-deps
 
 FROM node_base AS node_builder
