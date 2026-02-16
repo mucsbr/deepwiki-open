@@ -8,7 +8,8 @@ FROM node:20-alpine3.22 AS node_base
 FROM node_base AS node_deps
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --legacy-peer-deps
+RUN npm config set registry https://registry.npmmirror.com && \
+    npm ci --legacy-peer-deps
 
 FROM node_base AS node_builder
 WORKDIR /app
@@ -20,7 +21,8 @@ COPY public/ ./public/
 # Increase Node.js memory limit for build and disable telemetry
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN NODE_ENV=production npm run build
+RUN npm config set registry https://registry.npmmirror.com && \
+    NODE_ENV=production npm run build
 
 FROM python:3.11-slim AS py_deps
 WORKDIR /api
