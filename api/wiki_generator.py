@@ -258,6 +258,70 @@ async def _call_llm(provider: str, model: str, prompt: str, label: str = "") -> 
         raise
 
 
+def _parse_sse_text(raw: str) -> str:
+    """Parse raw SSE text (data: {...} lines) and extract the concatenated content.
+
+    Handles the case where the API returns streaming SSE format even though
+    stream=False was requested.
+    """
+    import json as _json
+    content_parts = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:"):].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            obj = _json.loads(payload)
+            for choice in obj.get("choices", []):
+                delta = choice.get("delta", {})
+                text = delta.get("content")
+                if text:
+                    content_parts.append(text)
+        except _json.JSONDecodeError:
+            continue
+    return "".join(content_parts)
+
+
+def _extract_llm_content(response) -> str:
+    """Extract text content from any LLM response format.
+
+    Handles:
+    - ChatCompletion object (normal non-streaming)
+    - Raw SSE string   (API ignored stream=False)
+    - AsyncStream       (returned a stream object)
+    - Plain string      (already text)
+    """
+    # 1. Standard ChatCompletion object
+    if hasattr(response, "choices") and response.choices:
+        msg = response.choices[0].message
+        content = getattr(msg, "content", None) or ""
+        if not content.strip():
+            reasoning = getattr(msg, "reasoning_content", None) or ""
+            if reasoning:
+                logger.info("[_extract_llm_content] content empty, using reasoning_content (%d chars)", len(reasoning))
+                return reasoning
+        return content
+
+    # 2. Raw SSE string — detect by "data:" prefix
+    if isinstance(response, str) and response.lstrip().startswith("data:"):
+        logger.info("[_extract_llm_content] detected raw SSE text (%d chars), parsing chunks", len(response))
+        parsed = _parse_sse_text(response)
+        if parsed:
+            return parsed
+        logger.warning("[_extract_llm_content] SSE parsing yielded empty content, returning raw")
+        return response
+
+    # 3. Plain string
+    if isinstance(response, str):
+        return response
+
+    # 4. Fallback
+    return str(response)
+
+
 async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "") -> str:
     """Actual LLM call implementation."""
     config = get_model_config(provider, model)
@@ -332,22 +396,7 @@ async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "
     )
     response = await client.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
 
-    # Non-streaming: response is a ChatCompletion object
-    if hasattr(response, "choices") and response.choices:
-        msg = response.choices[0].message
-        content = getattr(msg, "content", None) or ""
-        # Some thinking models (grok-thinking, deepseek-r1) may put the
-        # actual answer in content and reasoning in a separate field.
-        # If content is empty, fall back to reasoning_content.
-        if not content.strip():
-            reasoning = getattr(msg, "reasoning_content", None) or ""
-            if reasoning:
-                logger.info("[_call_llm_inner] content empty, using reasoning_content (%d chars)", len(reasoning))
-                return reasoning
-        return content
-    if isinstance(response, str):
-        return response
-    return str(response)
+    return _extract_llm_content(response)
 
 
 # ---------------------------------------------------------------------------
