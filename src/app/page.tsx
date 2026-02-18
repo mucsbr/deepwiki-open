@@ -93,7 +93,7 @@ export default function Home() {
     const repo = parts[parts.length - 1];
     const params = new URLSearchParams();
     params.append('type', 'gitlab');
-    params.append('repo_url', encodeURIComponent(project.web_url));
+    params.append('repo_url', project.web_url);
     params.append('language', language);
     router.push(`/${owner}/${repo}?${params.toString()}`);
   };

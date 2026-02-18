@@ -1695,13 +1695,12 @@ IMPORTANT:
                 setSelectedProviderState(cachedData.provider);
               }
 
-              // Update repoInfo
+              // Update repoInfo — merge cached repo fields but keep
+              // values already obtained from URL params (repoUrl, token, etc.)
               if(cachedData.repo) {
-                setEffectiveRepoInfo(cachedData.repo);
+                setEffectiveRepoInfo(prev => ({ ...prev, ...cachedData.repo, repoUrl: prev.repoUrl || cachedData.repo.repoUrl || cachedData.repo_url || null, token: prev.token || null, localPath: prev.localPath || null }));
               } else if (cachedData.repo_url && !effectiveRepoInfo.repoUrl) {
-                const updatedRepoInfo = { ...effectiveRepoInfo, repoUrl: cachedData.repo_url };
-                setEffectiveRepoInfo(updatedRepoInfo); // Update effective repo info state
-                console.log('Using cached repo_url:', cachedData.repo_url);
+                setEffectiveRepoInfo(prev => ({ ...prev, repoUrl: cachedData.repo_url }));
               }
 
               // Ensure the cached structure has sections and rootSections

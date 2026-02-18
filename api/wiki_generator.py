@@ -788,6 +788,7 @@ class WikiGenerator:
                 "owner": owner,
                 "repo": repo,
                 "type": repo_type,
+                "repoUrl": repo_url,
             },
             "provider": self.provider,
             "model": self.model,
