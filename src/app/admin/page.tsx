@@ -43,6 +43,7 @@ interface Project {
 
 interface BatchStatus {
   running: boolean;
+  operation?: string; // "reindex" | "regenerate_wiki" | "batch_index"
   progress: {
     current?: number;
     total?: number;
@@ -285,7 +286,7 @@ export default function AdminPage() {
   // Actions
   // ---------------------------------------------------------------------------
 
-  const triggerBatchIndex = async () => {
+  const triggerOperation = async (operation: 'batch_index' | 'reindex' | 'regenerate_wiki') => {
     // Build the request body from selection
     const groupIdsToIndex = Array.from(selectedGroups);
     // Individual projects: those selected but NOT part of a fully selected group
@@ -302,22 +303,28 @@ export default function AdminPage() {
     if (individualProjectIds.length > 0) body.project_ids = individualProjectIds;
     if (forceReindex) body.force = true;
 
+    const endpointMap: Record<string, string> = {
+      batch_index: '/api/admin/batch-index',
+      reindex: '/api/admin/reindex',
+      regenerate_wiki: '/api/admin/regenerate-wiki',
+    };
+
     try {
-      const res = await fetch('/api/admin/batch-index', {
+      const res = await fetch(endpointMap[operation], {
         method: 'POST',
         headers,
         body: JSON.stringify(Object.keys(body).length > 0 ? body : null),
       });
       if (res.ok) {
         setBatchStatus((prev) =>
-          prev ? { ...prev, running: true, progress: { status: 'starting' } } : prev
+          prev ? { ...prev, running: true, operation, progress: { status: 'starting' } } : prev
         );
       } else {
         const err = await res.json();
-        alert(err.detail || 'Failed to start batch index');
+        alert(err.detail || 'Failed to start operation');
       }
     } catch (err) {
-      console.error('Trigger batch index error:', err);
+      console.error('Trigger operation error:', err);
     }
   };
 
@@ -633,18 +640,45 @@ export default function AdminPage() {
 
           {/* Action bar */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-3 border-t border-[var(--border-color)]">
-            <button
-              onClick={triggerBatchIndex}
-              disabled={batchStatus?.running || selectedCount === 0}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent-primary)] text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <FaPlay className="text-xs" />
-              {batchStatus?.running
-                ? 'Running...'
-                : selectedCount > 0
-                  ? `Index Selected (${selectedCount})`
-                  : 'Select projects to index'}
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => triggerOperation('batch_index')}
+                disabled={batchStatus?.running || selectedCount === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent-primary)] text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Full pipeline: git pull + embedding + wiki generation"
+              >
+                <FaPlay className="text-xs" />
+                {batchStatus?.running && batchStatus.operation === 'batch_index'
+                  ? 'Running...'
+                  : selectedCount > 0
+                    ? `Full Index (${selectedCount})`
+                    : 'Select projects'}
+              </button>
+
+              <button
+                onClick={() => triggerOperation('reindex')}
+                disabled={batchStatus?.running || selectedCount === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Only git pull + re-embedding, no wiki generation"
+              >
+                <FaDatabase className="text-xs" />
+                {batchStatus?.running && batchStatus.operation === 'reindex'
+                  ? 'Running...'
+                  : 'Reindex Only'}
+              </button>
+
+              <button
+                onClick={() => triggerOperation('regenerate_wiki')}
+                disabled={batchStatus?.running || selectedCount === 0}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Only regenerate wiki cache using existing embeddings"
+              >
+                <FaWikipediaW className="text-xs" />
+                {batchStatus?.running && batchStatus.operation === 'regenerate_wiki'
+                  ? 'Running...'
+                  : 'Regen Wiki Only'}
+              </button>
+            </div>
 
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <input
@@ -669,6 +703,11 @@ export default function AdminPage() {
             <div className="mt-4 space-y-2">
               <div className="flex items-center justify-between text-sm">
                 <span className="text-[var(--foreground)]">
+                  <span className="font-medium text-[var(--muted)] mr-2">
+                    {batchStatus.operation === 'reindex' ? '[Reindex]' :
+                     batchStatus.operation === 'regenerate_wiki' ? '[Wiki Regen]' :
+                     '[Full Index]'}
+                  </span>
                   {batchStatus.progress.current_project || 'Processing...'}
                 </span>
                 <span className="text-[var(--muted)]">

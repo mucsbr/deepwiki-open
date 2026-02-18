@@ -92,17 +92,16 @@ class BatchIndexer:
         last_activity = project.get("last_activity_at", "")
         return needs_reindex(path, last_activity)
 
-    async def index_project(
+    async def reindex_project(
         self,
         project: dict,
         on_progress: Optional[Callable[[dict], None]] = None,
         force: bool = False,
     ) -> bool:
         """
-        Clone and create embeddings for a single project, then generate wiki cache.
+        Only do vectorisation: clone/pull -> embedding -> save pkl + metadata.
 
-        Uses the existing DatabaseManager.prepare_database pipeline, followed by
-        WikiGenerator to pre-generate wiki content so users see it instantly.
+        Does **not** generate wiki cache.
         """
         from api.data_pipeline import DatabaseManager
         from api.metadata_store import set_project_metadata
@@ -116,7 +115,7 @@ class BatchIndexer:
             logger.warning("No http_url_to_repo for project %s, skipping", path_with_ns)
             return False
 
-        logger.info("Indexing project: %s (id=%d)", path_with_ns, project_id)
+        logger.info("Reindexing project: %s (id=%d)", path_with_ns, project_id)
 
         # When force re-indexing, remove old pkl to avoid deserialization errors
         if force:
@@ -130,8 +129,6 @@ class BatchIndexer:
 
         try:
             db_manager = DatabaseManager()
-            # Run synchronous prepare_database in a thread so we don't block
-            # the event loop (git clone + embedding creation is heavy I/O).
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(
                 None,
@@ -142,7 +139,6 @@ class BatchIndexer:
                 ),
             )
 
-            # Record metadata
             repo_path = quote(path_with_ns, safe="")
             set_project_metadata(
                 project_path=path_with_ns,
@@ -152,13 +148,12 @@ class BatchIndexer:
                 status="indexed",
             )
 
-            logger.info("Successfully indexed: %s", path_with_ns)
+            logger.info("Successfully reindexed: %s", path_with_ns)
+            return True
         except Exception as exc:
-            logger.error("Failed to index %s: %s", path_with_ns, exc)
+            logger.error("Failed to reindex %s: %s", path_with_ns, exc)
 
-            # Still record metadata with error status
             from api.metadata_store import set_project_metadata as set_meta
-
             set_meta(
                 project_path=path_with_ns,
                 project_id=project_id,
@@ -168,7 +163,23 @@ class BatchIndexer:
             )
             return False
 
-        # --- Generate wiki cache ---
+    async def regenerate_wiki(
+        self,
+        project: dict,
+        on_progress: Optional[Callable[[dict], None]] = None,
+    ) -> bool:
+        """
+        Only regenerate wiki cache.  Depends on existing embeddings (pkl).
+        """
+        path_with_ns = project.get("path_with_namespace", "")
+        http_url = project.get("http_url_to_repo", "")
+
+        if not http_url:
+            logger.warning("No http_url_to_repo for project %s, skipping", path_with_ns)
+            return False
+
+        logger.info("Regenerating wiki for project: %s", path_with_ns)
+
         try:
             from api.wiki_generator import WikiGenerator
 
@@ -178,9 +189,6 @@ class BatchIndexer:
                     "status": "generating_wiki",
                 })
 
-            # Derive owner / repo from path_with_namespace.
-            # For nested groups (e.g. "bas/rpc/aggregator"), the owner is
-            # the full group path ("bas/rpc") and the repo is the last segment.
             parts = path_with_ns.split("/")
             owner = "/".join(parts[:-1]) if len(parts) >= 2 else path_with_ns
             repo_name = parts[-1] if len(parts) >= 2 else path_with_ns
@@ -200,11 +208,30 @@ class BatchIndexer:
                 repo_type="gitlab",
                 access_token=self.service_token,
             )
-            logger.info("Wiki cache generated for %s", path_with_ns)
+            logger.info("Wiki cache regenerated for %s", path_with_ns)
+            return True
         except Exception as exc:
-            # Wiki generation failure should not affect index status
-            logger.warning("Wiki generation failed for %s: %s", path_with_ns, exc)
+            logger.warning("Wiki regeneration failed for %s: %s", path_with_ns, exc)
+            return False
 
+    async def index_project(
+        self,
+        project: dict,
+        on_progress: Optional[Callable[[dict], None]] = None,
+        force: bool = False,
+    ) -> bool:
+        """
+        Full pipeline: reindex (clone/pull + embedding) then regenerate wiki cache.
+
+        This is the original combined behaviour.
+        """
+        success = await self.reindex_project(project, on_progress=on_progress, force=force)
+        if not success:
+            return False
+
+        # --- Generate wiki cache ---
+        await self.regenerate_wiki(project, on_progress=on_progress)
+        # Wiki generation failure should not affect overall index status
         return True
 
     async def fetch_project_by_id(self, project_id: int) -> Optional[dict]:
@@ -231,15 +258,18 @@ class BatchIndexer:
         project_ids: Optional[List[int]] = None,
         on_progress: Optional[Callable[[dict], None]] = None,
         force: bool = False,
+        operation: str = "batch_index",
     ) -> dict:
         """
-        Index only selected groups and/or individual projects.
+        Run an operation on selected groups and/or individual projects.
 
         Args:
-            group_ids: Groups whose projects should be fully indexed.
-            project_ids: Individual project IDs to index.
+            group_ids: Groups whose projects should be processed.
+            project_ids: Individual project IDs to process.
             on_progress: Optional progress callback.
-            force: If True, skip the should_reindex check and always re-index.
+            force: If True, skip the should_reindex check and always process.
+            operation: One of ``"batch_index"`` (full), ``"reindex"`` (embedding
+                       only), or ``"regenerate_wiki"`` (wiki only).
 
         Returns a summary dict with counts.
         """
@@ -277,7 +307,9 @@ class BatchIndexer:
             current += 1
             path = project.get("path_with_namespace", "unknown")
 
-            if not force and not self.should_reindex(project):
+            # For regenerate_wiki we skip the should_reindex check (wiki regen
+            # doesn't depend on code freshness).
+            if operation != "regenerate_wiki" and not force and not self.should_reindex(project):
                 logger.info("Skipping (up-to-date): %s", path)
                 skipped += 1
                 if on_progress:
@@ -291,13 +323,19 @@ class BatchIndexer:
                     )
                 continue
 
+            status_label = {
+                "batch_index": "indexing",
+                "reindex": "reindexing",
+                "regenerate_wiki": "generating_wiki",
+            }.get(operation, "indexing")
+
             if on_progress:
                 on_progress(
                     {
                         "current": current,
                         "total": grand_total,
                         "current_project": path,
-                        "status": "indexing",
+                        "status": status_label,
                     }
                 )
 
@@ -310,7 +348,14 @@ class BatchIndexer:
                         **info,
                     })
 
-            success = await self.index_project(project, on_progress=_wiki_progress, force=force)
+            # Dispatch to the right method
+            if operation == "reindex":
+                success = await self.reindex_project(project, on_progress=_wiki_progress, force=force)
+            elif operation == "regenerate_wiki":
+                success = await self.regenerate_wiki(project, on_progress=_wiki_progress)
+            else:
+                success = await self.index_project(project, on_progress=_wiki_progress, force=force)
+
             if success:
                 indexed += 1
             else:
@@ -322,7 +367,7 @@ class BatchIndexer:
             "skipped": skipped,
             "errors": errors,
         }
-        logger.info("Batch indexing (selected) complete: %s", summary)
+        logger.info("Batch %s (selected) complete: %s", operation, summary)
         return summary
 
     async def run(

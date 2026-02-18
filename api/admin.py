@@ -37,6 +37,7 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 _batch_status: dict = {
     "running": False,
+    "operation": "",  # "reindex" | "regenerate_wiki" | "batch_index"
     "progress": {},
     "last_result": {},
     "last_run": None,
@@ -332,18 +333,28 @@ async def search_projects(
 # ---------------------------------------------------------------------------
 
 
-@admin_router.post("/batch-index")
-async def trigger_batch_index(
-    body: Optional[BatchIndexRequest] = None,
-    _admin: dict = Depends(require_admin),
-):
-    """Trigger a batch index run in the background.
+async def _launch_batch_operation(
+    body: Optional[BatchIndexRequest],
+    operation: str,
+) -> dict:
+    """Shared logic to start a background batch operation.
 
-    Accepts optional group_ids and project_ids in the request body.
-    If neither is provided, falls back to indexing all configured groups.
+    Args:
+        body: Request body with group_ids, project_ids, force.
+        operation: One of ``"batch_index"``, ``"reindex"``,
+                   ``"regenerate_wiki"``.
+
+    Returns:
+        A dict with a ``message`` key on success.
+
+    Raises:
+        HTTPException on validation errors or conflict.
     """
     if _batch_status["running"]:
-        raise HTTPException(status_code=409, detail="Batch index is already running")
+        raise HTTPException(
+            status_code=409,
+            detail=f"An operation is already running ({_batch_status.get('operation', 'unknown')})",
+        )
 
     from api.config import GITLAB_SERVICE_TOKEN, GITLAB_URL
 
@@ -360,18 +371,17 @@ async def trigger_batch_index(
     if not selected_group_ids and not selected_project_ids:
         raise HTTPException(
             status_code=400,
-            detail="Please select at least one group or project to index",
+            detail="Please select at least one group or project",
         )
 
-    # Progress callback
     def on_progress(info: dict) -> None:
         _batch_status["progress"] = info
 
-    # Launch background task
-    async def _run_batch():
+    async def _run():
         from api.batch_indexer import BatchIndexer
 
         _batch_status["running"] = True
+        _batch_status["operation"] = operation
         _batch_status["progress"] = {"status": "starting"}
         try:
             indexer = BatchIndexer(
@@ -384,25 +394,61 @@ async def trigger_batch_index(
                 project_ids=selected_project_ids,
                 on_progress=on_progress,
                 force=force,
+                operation=operation,
             )
             _batch_status["last_result"] = result
             _batch_status["last_run"] = datetime.now(timezone.utc).isoformat()
         except Exception as exc:
-            logger.error("Batch index failed: %s", exc)
+            logger.error("Batch %s failed: %s", operation, exc)
             _batch_status["last_result"] = {"error": str(exc)}
         finally:
             _batch_status["running"] = False
+            _batch_status["operation"] = ""
             _batch_status["progress"] = {}
 
-    asyncio.create_task(_run_batch())
-    return {"message": "Batch index started"}
+    asyncio.create_task(_run())
+
+    labels = {
+        "batch_index": "Full index",
+        "reindex": "Reindex (embedding only)",
+        "regenerate_wiki": "Wiki regeneration",
+    }
+    return {"message": f"{labels.get(operation, operation)} started"}
+
+
+@admin_router.post("/batch-index")
+async def trigger_batch_index(
+    body: Optional[BatchIndexRequest] = None,
+    _admin: dict = Depends(require_admin),
+):
+    """Trigger a full batch index (embedding + wiki generation) in the background."""
+    return await _launch_batch_operation(body, operation="batch_index")
+
+
+@admin_router.post("/reindex")
+async def trigger_reindex(
+    body: Optional[BatchIndexRequest] = None,
+    _admin: dict = Depends(require_admin),
+):
+    """Trigger reindex only (git pull + embedding) without regenerating wiki cache."""
+    return await _launch_batch_operation(body, operation="reindex")
+
+
+@admin_router.post("/regenerate-wiki")
+async def trigger_regenerate_wiki(
+    body: Optional[BatchIndexRequest] = None,
+    _admin: dict = Depends(require_admin),
+):
+    """Trigger wiki cache regeneration only, relying on existing embeddings."""
+    return await _launch_batch_operation(body, operation="regenerate_wiki")
 
 
 @admin_router.get("/batch-index/status")
 async def get_batch_index_status(_admin: dict = Depends(require_admin)):
-    """Return the current batch index progress/result."""
+    """Return the current batch operation progress/result."""
     return {
         "running": _batch_status["running"],
+        "operation": _batch_status.get("operation", ""),
         "progress": _batch_status["progress"],
         "last_result": _batch_status["last_result"],
         "last_run": _batch_status.get("last_run"),

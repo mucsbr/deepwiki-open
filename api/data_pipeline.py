@@ -69,9 +69,72 @@ def count_tokens(text: str, embedder_type: str = None, is_ollama_embedder: bool 
         # Rough approximation: 4 characters per token
         return len(text) // 4
 
-def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_token: str = None) -> str:
+def _build_clone_url(repo_url: str, repo_type: str = None, access_token: str = None) -> str:
+    """Build a clone URL with embedded access token if provided."""
+    clone_url = repo_url
+    if access_token:
+        parsed = urlparse(repo_url)
+        encoded_token = quote(access_token, safe='')
+        if repo_type == "github":
+            clone_url = urlunparse((parsed.scheme, f"{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
+        elif repo_type == "gitlab":
+            clone_url = urlunparse((parsed.scheme, f"oauth2:{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
+        elif repo_type == "bitbucket":
+            clone_url = urlunparse((parsed.scheme, f"x-token-auth:{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
+    return clone_url
+
+
+def _git_pull(local_path: str, repo_url: str = None, repo_type: str = None, access_token: str = None) -> bool:
+    """
+    Execute git pull on an existing repository.
+
+    Args:
+        local_path: Path to the local repository.
+        repo_url: Original repo URL (used to set remote with token if needed).
+        repo_type: Type of repository (github, gitlab, bitbucket).
+        access_token: Access token for private repositories.
+
+    Returns:
+        True if the pull brought new changes, False if already up-to-date.
+    """
+    env = os.environ.copy()
+    env["GIT_SSL_NO_VERIFY"] = "true"
+
+    # If an access token is provided, temporarily update the remote URL so that
+    # git pull can authenticate.  We restore the clean URL afterwards.
+    clone_url = _build_clone_url(repo_url, repo_type, access_token) if repo_url and access_token else None
+    if clone_url:
+        subprocess.run(
+            ["git", "remote", "set-url", "origin", clone_url],
+            cwd=local_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+        )
+
+    try:
+        result = subprocess.run(
+            ["git", "pull"],
+            cwd=local_path,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        )
+        output = result.stdout.decode("utf-8")
+        logger.info("git pull output: %s", output.strip())
+        has_changes = "Already up to date" not in output and "Already up-to-date" not in output
+        return has_changes
+    finally:
+        # Restore clean remote URL (without token) to avoid persisting secrets
+        if clone_url and repo_url:
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", repo_url],
+                cwd=local_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+            )
+
+
+def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_token: str = None) -> tuple:
     """
     Downloads a Git repository (GitHub, GitLab, or Bitbucket) to a specified local path.
+    If the repository already exists locally, performs a git pull to update it.
 
     Args:
         repo_type(str): Type of repository
@@ -80,7 +143,8 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
         access_token (str, optional): Access token for private repositories.
 
     Returns:
-        str: The output message from the `git` command.
+        tuple: (output_message: str, has_changes: bool)
+               has_changes is True when new code was pulled or a fresh clone was done.
     """
     try:
         # Check if Git is installed
@@ -92,50 +156,55 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
             stderr=subprocess.PIPE,
         )
 
-        # Check if repository already exists
+        # Check if repository already exists — run git pull instead of skipping
         if os.path.exists(local_path) and os.listdir(local_path):
-            # Directory exists and is not empty
-            logger.warning(f"Repository already exists at {local_path}. Using existing repository.")
-            return f"Using existing repository at {local_path}"
+            logger.info(f"Repository already exists at {local_path}. Running git pull...")
+            try:
+                has_changes = _git_pull(local_path, repo_url, repo_type, access_token)
+                if has_changes:
+                    logger.info("git pull fetched new changes")
+                else:
+                    logger.info("Repository is already up-to-date")
+                return f"Updated existing repository at {local_path}", has_changes
+            except subprocess.CalledProcessError as pull_err:
+                error_msg = pull_err.stderr.decode('utf-8') if pull_err.stderr else str(pull_err)
+                if access_token:
+                    error_msg = error_msg.replace(access_token, "***TOKEN***")
+                    error_msg = error_msg.replace(quote(access_token, safe=''), "***TOKEN***")
+                logger.warning(f"git pull failed ({error_msg}), will re-clone")
+                # Remove the broken repo directory and fall through to clone
+                import shutil
+                shutil.rmtree(local_path, ignore_errors=True)
 
         # Ensure the local path exists
         os.makedirs(local_path, exist_ok=True)
 
         # Prepare the clone URL with access token if provided
-        clone_url = repo_url
+        clone_url = _build_clone_url(repo_url, repo_type, access_token)
         if access_token:
-            parsed = urlparse(repo_url)
-            # URL-encode the token to handle special characters
-            encoded_token = quote(access_token, safe='')
-            # Determine the repository type and format the URL accordingly
-            if repo_type == "github":
-                # Format: https://{token}@{domain}/owner/repo.git
-                # Works for both github.com and enterprise GitHub domains
-                clone_url = urlunparse((parsed.scheme, f"{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
-            elif repo_type == "gitlab":
-                # Format: https://oauth2:{token}@gitlab.com/owner/repo.git
-                clone_url = urlunparse((parsed.scheme, f"oauth2:{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
-            elif repo_type == "bitbucket":
-                # Format: https://x-token-auth:{token}@bitbucket.org/owner/repo.git
-                clone_url = urlunparse((parsed.scheme, f"x-token-auth:{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
-
             logger.info("Using access token for authentication")
 
-        # Clone the repository
+        # Clone the repository (full clone for future incremental pulls)
         logger.info(f"Cloning repository from {repo_url} to {local_path}")
-        # We use repo_url in the log to avoid exposing the token in logs
         env = os.environ.copy()
         env["GIT_SSL_NO_VERIFY"] = "true"
         result = subprocess.run(
-            ["git", "clone", "--depth=1", "--single-branch", clone_url, local_path],
+            ["git", "clone", clone_url, local_path],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
         )
 
+        # After clone, reset remote URL to clean version (no token)
+        if access_token:
+            subprocess.run(
+                ["git", "remote", "set-url", "origin", repo_url],
+                cwd=local_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+            )
+
         logger.info("Repository cloned successfully")
-        return result.stdout.decode("utf-8")
+        return result.stdout.decode("utf-8"), True  # fresh clone always counts as "changed"
 
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode('utf-8')
@@ -748,9 +817,16 @@ class DatabaseManager:
         # Handle backward compatibility
         if embedder_type is None and is_ollama_embedder is not None:
             embedder_type = 'ollama' if is_ollama_embedder else None
-        
+
         self.reset_database()
-        self._create_repo(repo_url_or_path, repo_type, access_token)
+        has_changes = self._create_repo(repo_url_or_path, repo_type, access_token)
+
+        # If git pull brought new changes, delete old pkl to force re-embedding
+        if has_changes and self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
+            logger.info("Repository has new changes — removing old database %s to force re-embedding",
+                        self.repo_paths["save_db_file"])
+            os.remove(self.repo_paths["save_db_file"])
+
         return self.prepare_db_index(embedder_type=embedder_type, excluded_dirs=excluded_dirs, excluded_files=excluded_files,
                                    included_dirs=included_dirs, included_files=included_files)
 
@@ -786,9 +862,11 @@ class DatabaseManager:
             repo_name = url_parts[-1].replace(".git", "")
         return repo_name
 
-    def _create_repo(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None) -> None:
+    def _create_repo(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None) -> bool:
         """
-        Download and prepare all paths.
+        Download and prepare all paths.  If the repository already exists,
+        runs ``git pull`` to fetch the latest changes.
+
         Paths:
         ~/.adalflow/repos/{owner}_{repo_name} (for url, local path will be the same)
         ~/.adalflow/databases/{owner}_{repo_name}.pkl
@@ -797,13 +875,18 @@ class DatabaseManager:
             repo_type(str): Type of repository
             repo_url_or_path (str): The URL or local path of the repository
             access_token (str, optional): Access token for private repositories
+
+        Returns:
+            bool: True if the repository contents changed (fresh clone or
+                  git pull brought new commits), False otherwise.
         """
         logger.info(f"Preparing repo storage for {repo_url_or_path}...")
+        has_changes = False
 
         try:
             # Strip whitespace to handle URLs with leading/trailing spaces
             repo_url_or_path = repo_url_or_path.strip()
-            
+
             root_path = get_adalflow_default_root_path()
 
             os.makedirs(root_path, exist_ok=True)
@@ -815,12 +898,9 @@ class DatabaseManager:
 
                 save_repo_dir = os.path.join(root_path, "repos", repo_name)
 
-                # Check if the repository directory already exists and is not empty
-                if not (os.path.exists(save_repo_dir) and os.listdir(save_repo_dir)):
-                    # Only download if the repository doesn't exist or is empty
-                    download_repo(repo_url_or_path, save_repo_dir, repo_type, access_token)
-                else:
-                    logger.info(f"Repository already exists at {save_repo_dir}. Using existing repository.")
+                # Always call download_repo — it handles both fresh clone and
+                # git pull for existing repos.
+                _msg, has_changes = download_repo(repo_url_or_path, save_repo_dir, repo_type, access_token)
             else:  # local path
                 repo_name = os.path.basename(repo_url_or_path)
                 save_repo_dir = repo_url_or_path
@@ -835,6 +915,8 @@ class DatabaseManager:
             }
             self.repo_url_or_path = repo_url_or_path
             logger.info(f"Repo paths: {self.repo_paths}")
+
+            return has_changes
 
         except Exception as e:
             logger.error(f"Failed to create repository structure: {e}")
