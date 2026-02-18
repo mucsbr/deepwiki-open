@@ -240,7 +240,14 @@ async def _call_llm(provider: str, model: str, prompt: str, label: str = "") -> 
     )
 
     try:
-        return await _call_llm_inner(provider, model, prompt, label)
+        result = await _call_llm_inner(provider, model, prompt, label)
+        # Strip <think> blocks for logging so we see actual content
+        stripped = re.sub(r"<think>[\s\S]*?</think>", "", result).strip()
+        logger.info(
+            "[_call_llm] OK %s | raw_chars=%d stripped_chars=%d | first_200=%s",
+            label or "unnamed", len(result), len(stripped), repr(stripped[:200]),
+        )
+        return result
     except Exception as exc:
         logger.error(
             "[_call_llm] FAILED %s | provider=%s model=%s | "
@@ -327,7 +334,17 @@ async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "
 
     # Non-streaming: response is a ChatCompletion object
     if hasattr(response, "choices") and response.choices:
-        return response.choices[0].message.content or ""
+        msg = response.choices[0].message
+        content = getattr(msg, "content", None) or ""
+        # Some thinking models (grok-thinking, deepseek-r1) may put the
+        # actual answer in content and reasoning in a separate field.
+        # If content is empty, fall back to reasoning_content.
+        if not content.strip():
+            reasoning = getattr(msg, "reasoning_content", None) or ""
+            if reasoning:
+                logger.info("[_call_llm_inner] content empty, using reasoning_content (%d chars)", len(reasoning))
+                return reasoning
+        return content
     if isinstance(response, str):
         return response
     return str(response)
@@ -355,6 +372,9 @@ def _parse_wiki_structure_xml(xml_text: str) -> dict:
     # Strip markdown code fences if present
     xml_text = re.sub(r"^```(?:xml)?\s*", "", xml_text.strip())
     xml_text = re.sub(r"```\s*$", "", xml_text.strip())
+
+    # Strip <think>...</think> blocks from thinking models (e.g. grok-thinking, deepseek-r1)
+    xml_text = re.sub(r"<think>[\s\S]*?</think>", "", xml_text).strip()
 
     # Extract <wiki_structure>...</wiki_structure>
     match = re.search(r"<wiki_structure>[\s\S]*?</wiki_structure>", xml_text)
