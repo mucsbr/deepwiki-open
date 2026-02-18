@@ -136,6 +136,7 @@ class BatchIndexer:
                     repo_url_or_path=http_url,
                     repo_type="gitlab",
                     access_token=self.service_token,
+                    pull=True,
                 ),
             )
 

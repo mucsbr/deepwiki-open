@@ -171,10 +171,10 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
                 if access_token:
                     error_msg = error_msg.replace(access_token, "***TOKEN***")
                     error_msg = error_msg.replace(quote(access_token, safe=''), "***TOKEN***")
-                logger.warning(f"git pull failed ({error_msg}), will re-clone")
-                # Remove the broken repo directory and fall through to clone
-                import shutil
-                shutil.rmtree(local_path, ignore_errors=True)
+                logger.warning(f"git pull failed ({error_msg}), continuing with existing repo")
+                # Keep the existing repository as-is — deleting it would be
+                # destructive when the failure is just a network issue.
+                return f"Using existing repository at {local_path} (pull failed)", False
 
         # Ensure the local path exists
         os.makedirs(local_path, exist_ok=True)
@@ -794,7 +794,8 @@ class DatabaseManager:
     def prepare_database(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None,
                          embedder_type: str = None, is_ollama_embedder: bool = None,
                          excluded_dirs: List[str] = None, excluded_files: List[str] = None,
-                         included_dirs: List[str] = None, included_files: List[str] = None) -> List[Document]:
+                         included_dirs: List[str] = None, included_files: List[str] = None,
+                         pull: bool = False) -> List[Document]:
         """
         Create a new database from the repository.
 
@@ -810,6 +811,9 @@ class DatabaseManager:
             excluded_files (List[str], optional): List of file patterns to exclude from processing
             included_dirs (List[str], optional): List of directories to include exclusively
             included_files (List[str], optional): List of file patterns to include exclusively
+            pull (bool): If True, run git pull on existing repos to fetch latest
+                         changes.  Default False — callers like chat/Ask skip the
+                         pull to avoid unnecessary network access.
 
         Returns:
             List[Document]: List of Document objects
@@ -819,7 +823,7 @@ class DatabaseManager:
             embedder_type = 'ollama' if is_ollama_embedder else None
 
         self.reset_database()
-        has_changes = self._create_repo(repo_url_or_path, repo_type, access_token)
+        has_changes = self._create_repo(repo_url_or_path, repo_type, access_token, pull=pull)
 
         # If git pull brought new changes, delete old pkl to force re-embedding
         if has_changes and self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
@@ -862,10 +866,15 @@ class DatabaseManager:
             repo_name = url_parts[-1].replace(".git", "")
         return repo_name
 
-    def _create_repo(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None) -> bool:
+    def _create_repo(self, repo_url_or_path: str, repo_type: str = None,
+                     access_token: str = None, pull: bool = False) -> bool:
         """
-        Download and prepare all paths.  If the repository already exists,
-        runs ``git pull`` to fetch the latest changes.
+        Download and prepare all paths.
+
+        If the repository already exists locally and *pull* is ``False``
+        (the default), the existing clone is reused without network access.
+        When *pull* is ``True`` (used by batch indexing), ``git pull`` is
+        attempted on existing repos to fetch the latest changes.
 
         Paths:
         ~/.adalflow/repos/{owner}_{repo_name} (for url, local path will be the same)
@@ -875,6 +884,7 @@ class DatabaseManager:
             repo_type(str): Type of repository
             repo_url_or_path (str): The URL or local path of the repository
             access_token (str, optional): Access token for private repositories
+            pull (bool): If True, run ``git pull`` on existing repos.
 
         Returns:
             bool: True if the repository contents changed (fresh clone or
@@ -898,9 +908,14 @@ class DatabaseManager:
 
                 save_repo_dir = os.path.join(root_path, "repos", repo_name)
 
-                # Always call download_repo — it handles both fresh clone and
-                # git pull for existing repos.
-                _msg, has_changes = download_repo(repo_url_or_path, save_repo_dir, repo_type, access_token)
+                if pull:
+                    # Batch-index path: clone or pull to get latest code
+                    _msg, has_changes = download_repo(repo_url_or_path, save_repo_dir, repo_type, access_token)
+                elif not (os.path.exists(save_repo_dir) and os.listdir(save_repo_dir)):
+                    # First-time clone (e.g. chat on a repo never seen before)
+                    _msg, has_changes = download_repo(repo_url_or_path, save_repo_dir, repo_type, access_token)
+                else:
+                    logger.info(f"Repository already exists at {save_repo_dir}. Using existing repository.")
             else:  # local path
                 repo_name = os.path.basename(repo_url_or_path)
                 save_repo_dir = repo_url_or_path
