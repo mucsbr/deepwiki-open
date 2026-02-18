@@ -1,19 +1,38 @@
 #!/usr/bin/env python3
 """Inspect a .pkl database file to check if it contains valid embeddings.
 
+Does NOT require adalflow — uses raw pickle to load the file.
+
 Usage:
-    python -m tools.inspect_pkl <pkl_path_or_repo_name>
+    python tools/inspect_pkl.py <pkl_path_or_repo_name>
 
 Examples:
-    python -m tools.inspect_pkl bas_rpc_ai-guardrails
-    python -m tools.inspect_pkl ~/.adalflow/databases/bas_rpc_ai-guardrails.pkl
+    python tools/inspect_pkl.py bas_rpc_ai-guardrails
+    python tools/inspect_pkl.py ~/.adalflow/databases/bas_rpc_ai-guardrails.pkl
 """
 import os
+import pickle
 import sys
+
+
+def _vec_len(vec):
+    """Return the length of an embedding vector, or 0 if empty/None."""
+    if vec is None:
+        return 0
+    try:
+        if isinstance(vec, list):
+            return len(vec)
+        if hasattr(vec, "shape"):
+            return int(vec.shape[-1]) if len(vec.shape) > 0 else 0
+        if hasattr(vec, "__len__"):
+            return int(len(vec))
+    except Exception:
+        pass
+    return 0
+
 
 def inspect_pkl(pkl_path: str):
     """Load and inspect a pkl file, printing summary of contents."""
-    from adalflow.database.localdb import LocalDB
 
     if not os.path.exists(pkl_path):
         # Try as a repo name
@@ -39,19 +58,46 @@ def inspect_pkl(pkl_path: str):
     print(f"Size: {file_size:,} bytes")
     print()
 
+    # Raw pickle load
     try:
-        db = LocalDB.load_state(pkl_path)
+        with open(pkl_path, "rb") as f:
+            db = pickle.load(f)
     except Exception as e:
         print(f"ERROR loading pkl: {e}")
         return
 
-    # Try to get transformed data
-    documents = db.get_transformed_data(key="split_and_embed")
+    # Print top-level type and attributes
+    print(f"Object type: {type(db).__name__}")
+    attrs = [a for a in dir(db) if not a.startswith("_")]
+    print(f"Public attrs: {attrs[:20]}")
+    print()
+
+    # Try to find transformed documents
+    documents = None
+
+    # Method 1: get_transformed_data (adalflow LocalDB)
+    if hasattr(db, "get_transformed_data"):
+        try:
+            documents = db.get_transformed_data(key="split_and_embed")
+        except Exception as e:
+            print(f"get_transformed_data failed: {e}")
+
+    # Method 2: direct attribute access
+    if documents is None and hasattr(db, "transformed_items"):
+        items = db.transformed_items
+        print(f"transformed_items keys: {list(items.keys()) if isinstance(items, dict) else type(items)}")
+        if isinstance(items, dict) and "split_and_embed" in items:
+            documents = items["split_and_embed"]
+
+    # Method 3: iterate if it's a list/dict directly
     if documents is None:
-        print("No 'split_and_embed' key found in database.")
-        # Check what keys exist
-        if hasattr(db, 'transformed_items'):
-            print(f"Available keys: {list(db.transformed_items.keys())}")
+        if isinstance(db, list):
+            documents = db
+        elif isinstance(db, dict):
+            print(f"Top-level dict keys: {list(db.keys())[:20]}")
+
+    if documents is None:
+        print("Could not find document list in pkl.")
         return
 
     total = len(documents)
@@ -71,19 +117,9 @@ def inspect_pkl(pkl_path: str):
         meta = getattr(doc, "meta_data", {})
         file_path = meta.get("file_path", "?") if isinstance(meta, dict) else "?"
 
-        vec_len = 0
-        if vec is not None:
-            try:
-                if isinstance(vec, list):
-                    vec_len = len(vec)
-                elif hasattr(vec, "shape"):
-                    vec_len = vec.shape[-1] if len(vec.shape) > 0 else 0
-                elif hasattr(vec, "__len__"):
-                    vec_len = len(vec)
-            except Exception:
-                pass
+        vl = _vec_len(vec)
 
-        if vec_len == 0:
+        if vl == 0:
             empty_count += 1
             if len(sample_empty) < 3:
                 sample_empty.append({
@@ -95,13 +131,13 @@ def inspect_pkl(pkl_path: str):
                 })
         else:
             non_empty_count += 1
-            sizes[vec_len] = sizes.get(vec_len, 0) + 1
+            sizes[vl] = sizes.get(vl, 0) + 1
             if len(sample_texts) < 3:
                 sample_texts.append({
                     "index": i,
                     "file_path": file_path,
                     "text_len": len(text) if text else 0,
-                    "vec_dim": vec_len,
+                    "vec_dim": vl,
                 })
 
     print(f"Embeddings: {non_empty_count} non-empty, {empty_count} empty")
@@ -138,9 +174,5 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
-
-    # Ensure project root is in path for imports
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    sys.path.insert(0, project_root)
 
     inspect_pkl(sys.argv[1])
