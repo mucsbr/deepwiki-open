@@ -619,6 +619,20 @@ class WikiGenerator:
 
         # Step 1.5 — Initialize RAG retriever (loads existing embeddings)
         _progress("preparing RAG retriever")
+        # Diagnose pkl path
+        expected_pkl = os.path.join(ADALFLOW_ROOT, "databases", f"{repo_dir_name}.pkl")
+        pkl_exists = os.path.exists(expected_pkl)
+        pkl_size = os.path.getsize(expected_pkl) if pkl_exists else 0
+        logger.info(
+            "[WikiGenerator] PKL diagnosis: expected=%s exists=%s size=%d bytes",
+            expected_pkl, pkl_exists, pkl_size,
+        )
+        if pkl_exists:
+            # Quick check: list all pkl files in databases dir
+            db_dir = os.path.join(ADALFLOW_ROOT, "databases")
+            all_pkls = [f for f in os.listdir(db_dir) if f.endswith(".pkl")] if os.path.isdir(db_dir) else []
+            logger.info("[WikiGenerator] All pkl files in databases/: %s", all_pkls)
+
         rag_instance = None
         try:
             from api.rag import RAG

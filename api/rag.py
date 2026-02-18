@@ -369,7 +369,12 @@ IMPORTANT FORMATTING RULES:
             included_dirs=included_dirs,
             included_files=included_files
         )
-        logger.info(f"Loaded {len(self.transformed_docs)} documents for retrieval")
+        # Log the actual pkl path used by the db_manager
+        actual_pkl = self.db_manager.repo_paths.get("save_db_file", "N/A") if self.db_manager.repo_paths else "N/A"
+        logger.info(
+            "Loaded %d documents for retrieval (pkl_path=%s, embedder_type=%s)",
+            len(self.transformed_docs), actual_pkl, self.embedder_type,
+        )
 
         # Validate and filter embeddings to ensure consistent sizes
         self.transformed_docs = self._validate_and_filter_embeddings(self.transformed_docs)

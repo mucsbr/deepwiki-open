@@ -877,9 +877,19 @@ class DatabaseManager:
         # Handle backward compatibility
         if embedder_type is None and is_ollama_embedder is not None:
             embedder_type = 'ollama' if is_ollama_embedder else None
+
+        pkl_path = self.repo_paths["save_db_file"] if self.repo_paths else "N/A"
+        logger.info(
+            "[prepare_db_index] pkl_path=%s exists=%s embedder_type=%s",
+            pkl_path,
+            os.path.exists(pkl_path) if pkl_path != "N/A" else False,
+            embedder_type,
+        )
+
         # check the database
         if self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
-            logger.info("Loading existing database...")
+            pkl_size = os.path.getsize(self.repo_paths["save_db_file"])
+            logger.info("Loading existing database (size=%d bytes)...", pkl_size)
             try:
                 self.db = LocalDB.load_state(self.repo_paths["save_db_file"])
                 documents = self.db.get_transformed_data(key="split_and_embed")
@@ -901,13 +911,17 @@ class DatabaseManager:
                             "Existing database contains no usable embeddings. Rebuilding embeddings..."
                         )
                     else:
+                        logger.info("[prepare_db_index] Returning %d docs from existing pkl (skipping re-embed)", len(documents))
                         return documents
+                else:
+                    logger.warning("[prepare_db_index] pkl loaded but get_transformed_data returned None/empty")
             except Exception as e:
                 logger.error(f"Error loading existing database: {e}")
                 # Continue to create a new database
 
         # prepare the database
-        logger.info("Creating new database...")
+        logger.info("[prepare_db_index] Creating new database (reading docs from %s)...",
+                     self.repo_paths["save_repo_dir"] if self.repo_paths else "N/A")
         documents = read_all_documents(
             self.repo_paths["save_repo_dir"],
             embedder_type=embedder_type,
@@ -916,12 +930,25 @@ class DatabaseManager:
             included_dirs=included_dirs,
             included_files=included_files
         )
+        logger.info("[prepare_db_index] read_all_documents returned %d docs, now embedding...", len(documents))
+        # Log sample document texts to verify content is not empty
+        for i, doc in enumerate(documents[:3]):
+            text = getattr(doc, "text", "")
+            logger.info("[prepare_db_index] sample doc[%d] text_len=%d preview=%s",
+                        i, len(text) if text else 0, repr((text or "")[:100]))
+
         self.db = transform_documents_and_save_to_db(
             documents, self.repo_paths["save_db_file"], embedder_type=embedder_type
         )
         logger.info(f"Total documents: {len(documents)}")
         transformed_docs = self.db.get_transformed_data(key="split_and_embed")
         logger.info(f"Total transformed documents: {len(transformed_docs)}")
+
+        # Verify embeddings after creation
+        if transformed_docs:
+            vec_lengths = [_embedding_vector_length(d) for d in transformed_docs[:5]]
+            logger.info("[prepare_db_index] First 5 embedding dims after transform: %s", vec_lengths)
+
         return transformed_docs
 
     def prepare_retriever(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None):
