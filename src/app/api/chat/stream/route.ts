@@ -17,13 +17,20 @@ export async function POST(req: NextRequest) {
 
     const targetUrl = `${TARGET_SERVER_BASE_URL}/chat/completions/stream`;
 
+    // Forward Authorization header from the incoming request (GitLab SSO JWT)
+    const authHeader = req.headers.get('authorization');
+    const backendHeaders: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream', // Indicate that we expect a stream
+    };
+    if (authHeader) {
+      backendHeaders['Authorization'] = authHeader;
+    }
+
     // Make the actual request to the backend service
     const backendResponse = await fetch(targetUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream', // Indicate that we expect a stream
-      },
+      headers: backendHeaders,
       body: JSON.stringify(requestBody),
     });
 

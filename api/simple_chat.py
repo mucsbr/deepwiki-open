@@ -1,17 +1,17 @@
 import logging
 import os
 from typing import List, Optional
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 import google.generativeai as genai
 from adalflow.components.model_client.ollama_client import OllamaClient
 from adalflow.core.types import ModelType
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request as FastAPIRequest
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from api.config import get_model_config, configs, OPENROUTER_API_KEY, OPENAI_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+from api.config import get_model_config, configs, OPENROUTER_API_KEY, OPENAI_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, GITLAB_URL
 from api.data_pipeline import count_tokens, get_file_content
 from api.openai_client import OpenAIClient
 from api.openrouter_client import OpenRouterClient
@@ -74,9 +74,45 @@ class ChatCompletionRequest(BaseModel):
     included_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to include exclusively")
 
 @app.post("/chat/completions/stream")
-async def chat_completions_stream(request: ChatCompletionRequest):
+async def chat_completions_stream(request: ChatCompletionRequest, raw_request: FastAPIRequest = None):
     """Stream a chat completion response directly using Google Generative AI"""
     try:
+        # --- Authentication & Permission Check (when GitLab SSO is configured) ---
+        if GITLAB_URL and raw_request:
+            from api.gitlab_auth import decode_jwt, decrypt_token
+            from api.gitlab_permission import check_repo_access
+            from jose import JWTError
+
+            auth_header = raw_request.headers.get("authorization", "")
+            if not auth_header.startswith("Bearer "):
+                raise HTTPException(status_code=401, detail="Not authenticated")
+
+            jwt_token = auth_header[7:]  # Strip "Bearer "
+            try:
+                user_payload = decode_jwt(jwt_token)
+                if "gitlab_access_token" in user_payload:
+                    user_payload["gitlab_access_token"] = decrypt_token(
+                        user_payload["gitlab_access_token"]
+                    )
+            except JWTError:
+                raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+            # Check repository permission
+            parsed_url = urlparse(request.repo_url)
+            project_path = parsed_url.path.strip("/")
+            if project_path:
+                gitlab_token = user_payload.get("gitlab_access_token", "")
+                user_id = user_payload.get("gitlab_user_id")
+                has_access = await check_repo_access(
+                    gitlab_token, project_path, GITLAB_URL, user_id
+                )
+                if not has_access:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"You do not have access to {project_path}",
+                    )
+                logger.info(f"Permission verified for user {user_payload.get('username')} on {project_path}")
+
         # Log incoming provider/model
         logger.info(f"[chat_completions_stream] Incoming request: provider='{request.provider}', model='{request.model}'")
 

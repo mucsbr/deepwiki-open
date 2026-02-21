@@ -103,14 +103,13 @@ async def handle_websocket_chat(websocket: WebSocket):
         # --- Permission check ---
         from api.gitlab_permission import check_repo_access
         from api.config import GITLAB_URL
+        from urllib.parse import urlparse
 
-        # Extract owner/repo from repo_url
+        # Extract project path from repo_url (supports nested GitLab groups)
         repo_url = request.repo_url
-        url_parts = repo_url.rstrip("/").split("/")
-        if len(url_parts) >= 2:
-            owner = url_parts[-2]
-            repo = url_parts[-1].replace(".git", "")
-            project_path = f"{owner}/{repo}"
+        parsed_url = urlparse(repo_url)
+        project_path = parsed_url.path.strip("/").removesuffix(".git")
+        if project_path and GITLAB_URL:
             gitlab_token = current_user.get("gitlab_access_token", "")
             user_id = current_user.get("gitlab_user_id")
 
