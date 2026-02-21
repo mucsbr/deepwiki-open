@@ -149,6 +149,7 @@ from api.gitlab_auth import router as gitlab_auth_router, get_current_user
 from api.gitlab_permission import (
     verify_repo_permission,
     check_repo_access,
+    get_user_accessible_projects,
 )
 from api.config import GITLAB_URL
 from api.metadata_store import get_all_indexed_projects
@@ -552,38 +553,43 @@ async def list_accessible_projects(current_user: dict = Depends(get_current_user
     """
     Return indexed projects that the current user has access to on GitLab.
 
-    Iterates over all indexed projects and checks each one against the user's
-    GitLab permissions (results are cached by gitlab_permission module).
+    Fetches all user-accessible projects in bulk from GitLab, then intersects
+    with the indexed project list — much faster than checking each project
+    individually.
     """
     gitlab_token = current_user.get("gitlab_access_token", "")
-    user_id = current_user.get("gitlab_user_id")
 
     # Get all indexed projects from metadata store
     indexed_projects = get_all_indexed_projects()
 
-    # Check access for each indexed project
+    # Bulk-fetch all projects the user can access from GitLab
+    accessible = await get_user_accessible_projects(
+        gitlab_token=gitlab_token,
+        gitlab_url=GITLAB_URL,
+    )
+    accessible_paths = {p.get("path_with_namespace", "") for p in accessible}
+    # Also build a lookup for extra fields (description, avatar)
+    accessible_lookup = {p.get("path_with_namespace", ""): p for p in accessible}
+
+    # Intersect: only return indexed projects the user can access
     result = []
     for path, meta in indexed_projects.items():
         if meta.get("status") != "indexed":
             continue
-        has_access = await check_repo_access(
-            gitlab_token=gitlab_token,
-            project_path=path,
-            gitlab_url=GITLAB_URL,
-            user_id=user_id,
-        )
-        if has_access:
-            result.append({
-                "id": meta.get("project_id"),
-                "name": path.split("/")[-1],
-                "path_with_namespace": path,
-                "description": "",
-                "last_activity_at": meta.get("last_activity_at", ""),
-                "web_url": f"{GITLAB_URL}/{path}" if GITLAB_URL else "",
-                "avatar_url": "",
-                "indexed_at": meta.get("indexed_at", ""),
-                "index_status": meta.get("status", "unknown"),
-            })
+        if path not in accessible_paths:
+            continue
+        gl_proj = accessible_lookup.get(path, {})
+        result.append({
+            "id": meta.get("project_id"),
+            "name": path.split("/")[-1],
+            "path_with_namespace": path,
+            "description": gl_proj.get("description", "") or "",
+            "last_activity_at": meta.get("last_activity_at", ""),
+            "web_url": gl_proj.get("web_url", f"{GITLAB_URL}/{path}" if GITLAB_URL else ""),
+            "avatar_url": gl_proj.get("avatar_url", "") or "",
+            "indexed_at": meta.get("indexed_at", ""),
+            "index_status": meta.get("status", "unknown"),
+        })
 
     return result
 
