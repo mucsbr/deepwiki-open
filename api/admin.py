@@ -443,6 +443,200 @@ async def trigger_regenerate_wiki(
     return await _launch_batch_operation(body, operation="regenerate_wiki")
 
 
+# ---------------------------------------------------------------------------
+# Update detection endpoint
+# ---------------------------------------------------------------------------
+
+
+@admin_router.get("/check-updates")
+async def check_updates(_admin: dict = Depends(require_admin)):
+    """Compare GitLab last_activity_at with stored metadata for all indexed projects.
+
+    Returns a dict mapping project_path to update info:
+    ``{ "stored": "...", "current": "...", "needs_update": bool }``
+    """
+    from api.config import GITLAB_SERVICE_TOKEN
+
+    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
+        )
+
+    projects = get_all_indexed_projects()
+    if not projects:
+        return {}
+
+    # Collect project_ids that have a valid id
+    id_to_path: dict[int, str] = {}
+    for path, meta in projects.items():
+        pid = meta.get("project_id")
+        if pid:
+            id_to_path[int(pid)] = path
+
+    if not id_to_path:
+        return {}
+
+    result: dict[str, dict] = {}
+
+    async with httpx.AsyncClient(verify=False) as client:
+        for pid, path in id_to_path.items():
+            stored_activity = projects[path].get("last_activity_at", "")
+            try:
+                resp = await client.get(
+                    f"{GITLAB_URL.rstrip('/')}/api/v4/projects/{pid}",
+                    headers={"PRIVATE-TOKEN": GITLAB_SERVICE_TOKEN},
+                    timeout=15.0,
+                )
+                if resp.status_code == 200:
+                    current_activity = resp.json().get("last_activity_at", "")
+                    result[path] = {
+                        "stored": stored_activity,
+                        "current": current_activity,
+                        "needs_update": stored_activity != current_activity,
+                    }
+                else:
+                    result[path] = {
+                        "stored": stored_activity,
+                        "current": None,
+                        "needs_update": False,
+                    }
+            except Exception as exc:
+                logger.warning("Failed to check update for %s: %s", path, exc)
+                result[path] = {
+                    "stored": stored_activity,
+                    "current": None,
+                    "needs_update": False,
+                }
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Single project operation endpoints
+# ---------------------------------------------------------------------------
+
+
+@admin_router.post("/projects/{project_path:path}/reindex")
+async def reindex_single_project(
+    project_path: str,
+    _admin: dict = Depends(require_admin),
+):
+    """Reindex a single project (git pull + re-embedding)."""
+    if _batch_status["running"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An operation is already running ({_batch_status.get('operation', 'unknown')})",
+        )
+
+    from api.config import GITLAB_SERVICE_TOKEN
+
+    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
+        )
+
+    meta = get_project_metadata(project_path)
+    if not meta or not meta.get("project_id"):
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_path}")
+
+    project_id = int(meta["project_id"])
+
+    from api.batch_indexer import BatchIndexer
+
+    indexer = BatchIndexer(
+        gitlab_url=GITLAB_URL,
+        service_token=GITLAB_SERVICE_TOKEN,
+        group_ids=[],
+    )
+    project_info = await indexer.fetch_project_by_id(project_id)
+    if not project_info:
+        raise HTTPException(status_code=404, detail=f"Could not fetch project from GitLab: {project_path}")
+
+    def on_progress(info: dict) -> None:
+        _batch_status["progress"] = info
+
+    async def _run():
+        _batch_status["running"] = True
+        _batch_status["operation"] = "reindex"
+        _batch_status["progress"] = {"status": "starting", "current_project": project_path}
+        try:
+            success = await indexer.reindex_project(project_info, on_progress=on_progress, force=True)
+            _batch_status["last_result"] = {"project": project_path, "success": success}
+            _batch_status["last_run"] = datetime.now(timezone.utc).isoformat()
+        except Exception as exc:
+            logger.error("Single reindex failed for %s: %s", project_path, exc)
+            _batch_status["last_result"] = {"project": project_path, "error": str(exc)}
+        finally:
+            _batch_status["running"] = False
+            _batch_status["operation"] = ""
+            _batch_status["progress"] = {}
+
+    asyncio.create_task(_run())
+    return {"message": f"Reindex started for {project_path}"}
+
+
+@admin_router.post("/projects/{project_path:path}/regenerate-wiki")
+async def regenerate_wiki_single_project(
+    project_path: str,
+    _admin: dict = Depends(require_admin),
+):
+    """Regenerate wiki cache for a single project."""
+    if _batch_status["running"]:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An operation is already running ({_batch_status.get('operation', 'unknown')})",
+        )
+
+    from api.config import GITLAB_SERVICE_TOKEN
+
+    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
+        )
+
+    meta = get_project_metadata(project_path)
+    if not meta or not meta.get("project_id"):
+        raise HTTPException(status_code=404, detail=f"Project not found: {project_path}")
+
+    project_id = int(meta["project_id"])
+
+    from api.batch_indexer import BatchIndexer
+
+    indexer = BatchIndexer(
+        gitlab_url=GITLAB_URL,
+        service_token=GITLAB_SERVICE_TOKEN,
+        group_ids=[],
+    )
+    project_info = await indexer.fetch_project_by_id(project_id)
+    if not project_info:
+        raise HTTPException(status_code=404, detail=f"Could not fetch project from GitLab: {project_path}")
+
+    def on_progress(info: dict) -> None:
+        _batch_status["progress"] = info
+
+    async def _run():
+        _batch_status["running"] = True
+        _batch_status["operation"] = "regenerate_wiki"
+        _batch_status["progress"] = {"status": "starting", "current_project": project_path}
+        try:
+            success = await indexer.regenerate_wiki(project_info, on_progress=on_progress)
+            _batch_status["last_result"] = {"project": project_path, "success": success}
+            _batch_status["last_run"] = datetime.now(timezone.utc).isoformat()
+        except Exception as exc:
+            logger.error("Single wiki regen failed for %s: %s", project_path, exc)
+            _batch_status["last_result"] = {"project": project_path, "error": str(exc)}
+        finally:
+            _batch_status["running"] = False
+            _batch_status["operation"] = ""
+            _batch_status["progress"] = {}
+
+    asyncio.create_task(_run())
+    return {"message": f"Wiki regeneration started for {project_path}"}
+
+
 @admin_router.get("/batch-index/status")
 async def get_batch_index_status(_admin: dict = Depends(require_admin)):
     """Return the current batch operation progress/result."""

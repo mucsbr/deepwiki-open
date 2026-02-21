@@ -16,6 +16,8 @@ import {
   FaFilter,
   FaChevronRight,
   FaChevronDown,
+  FaRedo,
+  FaBookOpen,
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
@@ -78,6 +80,12 @@ interface GroupProject {
   index_status: string | null;
 }
 
+interface UpdateInfo {
+  stored: string;
+  current: string | null;
+  needs_update: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -92,6 +100,16 @@ export default function AdminPage() {
   const [batchStatus, setBatchStatus] = useState<BatchStatus | null>(null);
   const [config, setConfig] = useState<SystemConfig | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Tab state
+  const [activeTab, setActiveTab] = useState<'indexed' | 'batch'>('indexed');
+
+  // Update detection
+  const [updateInfo, setUpdateInfo] = useState<Record<string, UpdateInfo>>({});
+  const [updateCheckLoading, setUpdateCheckLoading] = useState(false);
+
+  // Single project operation state
+  const [operatingProject, setOperatingProject] = useState<string | null>(null);
 
   // Project list filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -144,14 +162,54 @@ export default function AdminPage() {
     }
   }, [token, headers]);
 
+  const checkUpdates = useCallback(async () => {
+    if (!token) return;
+    setUpdateCheckLoading(true);
+    try {
+      const res = await fetch('/api/admin/check-updates', { headers });
+      if (res.ok) {
+        setUpdateInfo(await res.json());
+      }
+    } catch (err) {
+      console.error('Failed to check updates:', err);
+    } finally {
+      setUpdateCheckLoading(false);
+    }
+  }, [token, headers]);
+
+  const triggerSingleOperation = useCallback(async (
+    projectPath: string,
+    operation: 'reindex' | 'regenerate-wiki',
+  ) => {
+    setOperatingProject(projectPath);
+    try {
+      const res = await fetch(`/api/admin/projects/${projectPath}/${operation}`, {
+        method: 'POST',
+        headers,
+      });
+      if (res.ok) {
+        setBatchStatus((prev) =>
+          prev ? { ...prev, running: true, operation: operation === 'reindex' ? 'reindex' : 'regenerate_wiki', progress: { status: 'starting', current_project: projectPath } } : prev
+        );
+      } else {
+        const err = await res.json();
+        alert(err.detail || `Failed to start ${operation}`);
+      }
+    } catch (err) {
+      console.error(`Single ${operation} error:`, err);
+    } finally {
+      setOperatingProject(null);
+    }
+  }, [headers]);
+
   useEffect(() => {
     if (authLoading) return;
     if (!isAdmin) {
       router.replace('/');
       return;
     }
-    fetchAll();
-  }, [authLoading, isAdmin, fetchAll, router]);
+    fetchAll().then(() => checkUpdates());
+  }, [authLoading, isAdmin, fetchAll, checkUpdates, router]);
 
   // Batch status polling
   useEffect(() => {
@@ -349,6 +407,10 @@ export default function AdminPage() {
     return Array.from(s).sort();
   }, [projects]);
 
+  const needsUpdateCount = useMemo(() => {
+    return Object.values(updateInfo).filter((u) => u.needs_update).length;
+  }, [updateInfo]);
+
   // ---------------------------------------------------------------------------
   // Loading / unauthorized guards
   // ---------------------------------------------------------------------------
@@ -430,314 +492,414 @@ export default function AdminPage() {
         </section>
 
         {/* ================================================================ */}
-        {/* Area 2: Project List */}
+        {/* Tab Navigation */}
         {/* ================================================================ */}
-        <section className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-6">
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-            <h2 className="text-lg font-bold text-[var(--foreground)]">
-              Indexed Projects ({filteredProjects.length})
-            </h2>
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search..."
-                  className="pl-8 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
-                />
-              </div>
-              <div className="relative flex items-center">
-                <FaFilter className="absolute left-2.5 text-[var(--muted)] text-xs pointer-events-none" />
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="pl-7 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)]"
-                >
-                  <option value="all">All</option>
-                  {availableStatuses.map((s) => (
-                    <option key={s} value={s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
+        <section className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)]">
+          {/* Tab bar */}
+          <div className="flex border-b border-[var(--border-color)]">
+            <button
+              onClick={() => setActiveTab('indexed')}
+              className={`px-6 py-3 text-sm font-medium transition-colors relative ${
+                activeTab === 'indexed'
+                  ? 'text-[var(--accent-primary)]'
+                  : 'text-[var(--muted)] hover:text-[var(--foreground)]'
+              }`}
+            >
+              Indexed Projects
+              {needsUpdateCount > 0 && (
+                <span className="ml-2 px-1.5 py-0.5 rounded-full text-xs bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">
+                  {needsUpdateCount} needs update
+                </span>
+              )}
+              {activeTab === 'indexed' && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-primary)]" />
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab('batch')}
+              className={`px-6 py-3 text-sm font-medium transition-colors relative ${
+                activeTab === 'batch'
+                  ? 'text-[var(--accent-primary)]'
+                  : 'text-[var(--muted)] hover:text-[var(--foreground)]'
+              }`}
+            >
+              Batch Indexing
+              {activeTab === 'batch' && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-primary)]" />
+              )}
+            </button>
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[var(--border-color)] text-left text-[var(--muted)]">
-                  <th className="pb-2 pr-4">Project Path</th>
-                  <th className="pb-2 pr-4">Status</th>
-                  <th className="pb-2 pr-4">Indexed At</th>
-                  <th className="pb-2">Last Activity</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredProjects.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="py-8 text-center text-[var(--muted)]">
-                      No projects found.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredProjects.map((p) => (
-                    <tr key={p.path} className="border-b border-[var(--border-color)]/50 hover:bg-[var(--accent-primary)]/5">
-                      <td className="py-2 pr-4 font-medium text-[var(--foreground)]">{p.path}</td>
-                      <td className="py-2 pr-4"><StatusBadge status={p.status} /></td>
-                      <td className="py-2 pr-4 text-[var(--muted)]">
-                        {p.indexed_at ? new Date(p.indexed_at).toLocaleString() : '-'}
-                      </td>
-                      <td className="py-2 text-[var(--muted)]">
-                        {p.last_activity_at ? new Date(p.last_activity_at).toLocaleString() : '-'}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        {/* ================================================================ */}
-        {/* Area 3: Batch Index — Group + Project Selection */}
-        {/* ================================================================ */}
-        <section className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-6">
-          <h2 className="text-lg font-bold text-[var(--foreground)] mb-4">Batch Indexing</h2>
-
-          {/* Project search */}
-          <div className="mb-4">
-            <div className="flex items-center gap-2 mb-2">
-              <div className="relative flex-1">
-                <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
-                <input
-                  type="text"
-                  value={projectSearch}
-                  onChange={(e) => setProjectSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleProjectSearch()}
-                  placeholder="Search projects by name (press Enter)..."
-                  className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
-                />
-              </div>
-              <button
-                onClick={handleProjectSearch}
-                disabled={searchLoading || !projectSearch.trim()}
-                className="px-3 py-1.5 text-sm rounded-md bg-[var(--accent-primary)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {searchLoading ? 'Searching...' : 'Search'}
-              </button>
-            </div>
-            {searchResults.length > 0 && (
-              <div className="border border-[var(--border-color)] rounded-md p-2 mb-2 max-h-48 overflow-y-auto">
-                <p className="text-xs text-[var(--muted)] mb-1">
-                  Found {searchResults.length} projects — check to add to index selection
-                </p>
-                {searchResults.map((p) => (
-                  <div
-                    key={p.id}
-                    className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--accent-primary)]/5"
-                  >
-                    <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
+          {/* Tab content */}
+          <div className="p-6">
+            {/* ============================================================ */}
+            {/* Tab 1: Indexed Projects */}
+            {/* ============================================================ */}
+            {activeTab === 'indexed' && (
+              <>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+                  <h2 className="text-lg font-bold text-[var(--foreground)]">
+                    Indexed Projects ({filteredProjects.length})
+                  </h2>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={checkUpdates}
+                      disabled={updateCheckLoading}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:bg-[var(--accent-primary)]/5 transition-colors disabled:opacity-50"
+                      title="Check for updates from GitLab"
+                    >
+                      <FaSync className={`text-xs ${updateCheckLoading ? 'animate-spin' : ''}`} />
+                      Check Updates
+                    </button>
+                    <div className="relative">
+                      <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
                       <input
-                        type="checkbox"
-                        checked={selectedProjects.has(p.id)}
-                        onChange={() => {
-                          const next = new Set(selectedProjects);
-                          if (next.has(p.id)) next.delete(p.id);
-                          else next.add(p.id);
-                          setSelectedProjects(next);
-                        }}
-                        className="accent-[var(--accent-primary)]"
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder="Search..."
+                        className="pl-8 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
                       />
-                      <span className="text-sm text-[var(--foreground)]">{p.path_with_namespace}</span>
-                    </label>
-                    <IndexStatusBadge status={p.index_status} />
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Group list */}
-          {groups.length === 0 ? (
-            <p className="text-sm text-[var(--muted)]">No groups configured (set GITLAB_BATCH_GROUPS).</p>
-          ) : (
-            <div className="space-y-1 mb-4">
-              {groups.map((group) => {
-                const isExpanded = expandedGroups.has(group.id);
-                const isGroupSelected = selectedGroups.has(group.id);
-                const gProjects = groupProjects[group.id] || [];
-                const isLoadingGroup = loadingGroups.has(group.id);
-
-                // Determine indeterminate state: some but not all projects selected
-                const selectedInGroup = gProjects.filter((p) => selectedProjects.has(p.id)).length;
-                const isIndeterminate = !isGroupSelected && selectedInGroup > 0;
-
-                return (
-                  <div key={group.id}>
-                    {/* Group row */}
-                    <div className="flex items-center gap-2 p-2 rounded-md hover:bg-[var(--accent-primary)]/5">
-                      <button
-                        onClick={() => toggleGroupExpand(group.id)}
-                        className="p-1 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
-                      >
-                        {isExpanded ? <FaChevronDown className="text-xs" /> : <FaChevronRight className="text-xs" />}
-                      </button>
-                      <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={isGroupSelected}
-                          ref={(el) => {
-                            if (el) el.indeterminate = isIndeterminate;
-                          }}
-                          onChange={() => toggleGroupSelect(group.id)}
-                          className="accent-[var(--accent-primary)]"
-                        />
-                        <span className="font-medium text-sm text-[var(--foreground)]">{group.name}</span>
-                        <span className="text-xs text-[var(--muted)]">({group.full_path})</span>
-                        {gProjects.length > 0 && (
-                          <span className="text-xs text-[var(--muted)]">
-                            &middot; {gProjects.length} projects
-                          </span>
-                        )}
-                      </label>
                     </div>
-
-                    {/* Projects under this group */}
-                    {isExpanded && (
-                      <div className="ml-10 border-l border-[var(--border-color)] pl-3 pb-1">
-                        {isLoadingGroup ? (
-                          <p className="text-xs text-[var(--muted)] py-2">Loading projects...</p>
-                        ) : gProjects.length === 0 ? (
-                          <p className="text-xs text-[var(--muted)] py-2">No projects in this group.</p>
-                        ) : (
-                          gProjects.map((p) => (
-                            <div
-                              key={p.id}
-                              className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--accent-primary)]/5"
-                            >
-                              <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
-                                <input
-                                  type="checkbox"
-                                  checked={selectedProjects.has(p.id)}
-                                  onChange={() => toggleProjectSelect(p.id, group.id)}
-                                  className="accent-[var(--accent-primary)]"
-                                />
-                                <span className="text-sm text-[var(--foreground)]">{p.path_with_namespace}</span>
-                              </label>
-                              <IndexStatusBadge status={p.index_status} />
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
+                    <div className="relative flex items-center">
+                      <FaFilter className="absolute left-2.5 text-[var(--muted)] text-xs pointer-events-none" />
+                      <select
+                        value={statusFilter}
+                        onChange={(e) => setStatusFilter(e.target.value)}
+                        className="pl-7 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)]"
+                      >
+                        <option value="all">All</option>
+                        {availableStatuses.map((s) => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                </div>
 
-          {/* Action bar */}
-          <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-3 border-t border-[var(--border-color)]">
-            <div className="flex items-center gap-2 flex-wrap">
-              <button
-                onClick={() => triggerOperation('batch_index')}
-                disabled={batchStatus?.running || selectedCount === 0}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent-primary)] text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Full pipeline: git pull + embedding + wiki generation"
-              >
-                <FaPlay className="text-xs" />
-                {batchStatus?.running && batchStatus.operation === 'batch_index'
-                  ? 'Running...'
-                  : selectedCount > 0
-                    ? `Full Index (${selectedCount})`
-                    : 'Select projects'}
-              </button>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[var(--border-color)] text-left text-[var(--muted)]">
+                        <th className="pb-2 pr-4">Project Path</th>
+                        <th className="pb-2 pr-4">Status</th>
+                        <th className="pb-2 pr-4">Indexed At</th>
+                        <th className="pb-2 pr-4">Last Activity</th>
+                        <th className="pb-2 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredProjects.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} className="py-8 text-center text-[var(--muted)]">
+                            No projects found.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredProjects.map((p) => {
+                          const update = updateInfo[p.path];
+                          const needsUpdate = update?.needs_update ?? false;
+                          return (
+                            <tr
+                              key={p.path}
+                              className={`border-b border-[var(--border-color)]/50 ${
+                                needsUpdate
+                                  ? 'bg-yellow-50/50 dark:bg-yellow-900/10'
+                                  : 'hover:bg-[var(--accent-primary)]/5'
+                              }`}
+                            >
+                              <td className="py-2 pr-4 font-medium text-[var(--foreground)]">
+                                <div className="flex items-center gap-2">
+                                  {p.path}
+                                  {needsUpdate && (
+                                    <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 whitespace-nowrap">
+                                      needs update
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-2 pr-4"><StatusBadge status={p.status} /></td>
+                              <td className="py-2 pr-4 text-[var(--muted)]">
+                                {p.indexed_at ? new Date(p.indexed_at).toLocaleString() : '-'}
+                              </td>
+                              <td className="py-2 pr-4 text-[var(--muted)]">
+                                {p.last_activity_at ? new Date(p.last_activity_at).toLocaleString() : '-'}
+                              </td>
+                              <td className="py-2 text-right">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <button
+                                    onClick={() => triggerSingleOperation(p.path, 'reindex')}
+                                    disabled={batchStatus?.running || operatingProject === p.path}
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-blue-300 text-blue-600 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-400 dark:hover:bg-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    title="Reindex this project (git pull + re-embedding)"
+                                  >
+                                    <FaRedo className="text-[10px]" />
+                                    Reindex
+                                  </button>
+                                  <button
+                                    onClick={() => triggerSingleOperation(p.path, 'regenerate-wiki')}
+                                    disabled={batchStatus?.running || operatingProject === p.path}
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-green-300 text-green-600 hover:bg-green-50 dark:border-green-700 dark:text-green-400 dark:hover:bg-green-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    title="Regenerate wiki cache for this project"
+                                  >
+                                    <FaBookOpen className="text-[10px]" />
+                                    Regen Wiki
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
 
-              <button
-                onClick={() => triggerOperation('reindex')}
-                disabled={batchStatus?.running || selectedCount === 0}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Only git pull + re-embedding, no wiki generation"
-              >
-                <FaDatabase className="text-xs" />
-                {batchStatus?.running && batchStatus.operation === 'reindex'
-                  ? 'Running...'
-                  : 'Reindex Only'}
-              </button>
+            {/* ============================================================ */}
+            {/* Tab 2: Batch Indexing */}
+            {/* ============================================================ */}
+            {activeTab === 'batch' && (
+              <>
+                <h2 className="text-lg font-bold text-[var(--foreground)] mb-4">Batch Indexing</h2>
 
-              <button
-                onClick={() => triggerOperation('regenerate_wiki')}
-                disabled={batchStatus?.running || selectedCount === 0}
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Only regenerate wiki cache using existing embeddings"
-              >
-                <FaWikipediaW className="text-xs" />
-                {batchStatus?.running && batchStatus.operation === 'regenerate_wiki'
-                  ? 'Running...'
-                  : 'Regen Wiki Only'}
-              </button>
-            </div>
+                {/* Project search */}
+                <div className="mb-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="relative flex-1">
+                      <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
+                      <input
+                        type="text"
+                        value={projectSearch}
+                        onChange={(e) => setProjectSearch(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleProjectSearch()}
+                        placeholder="Search projects by name (press Enter)..."
+                        className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                      />
+                    </div>
+                    <button
+                      onClick={handleProjectSearch}
+                      disabled={searchLoading || !projectSearch.trim()}
+                      className="px-3 py-1.5 text-sm rounded-md bg-[var(--accent-primary)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {searchLoading ? 'Searching...' : 'Search'}
+                    </button>
+                  </div>
+                  {searchResults.length > 0 && (
+                    <div className="border border-[var(--border-color)] rounded-md p-2 mb-2 max-h-48 overflow-y-auto">
+                      <p className="text-xs text-[var(--muted)] mb-1">
+                        Found {searchResults.length} projects — check to add to index selection
+                      </p>
+                      {searchResults.map((p) => (
+                        <div
+                          key={p.id}
+                          className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--accent-primary)]/5"
+                        >
+                          <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={selectedProjects.has(p.id)}
+                              onChange={() => {
+                                const next = new Set(selectedProjects);
+                                if (next.has(p.id)) next.delete(p.id);
+                                else next.add(p.id);
+                                setSelectedProjects(next);
+                              }}
+                              className="accent-[var(--accent-primary)]"
+                            />
+                            <span className="text-sm text-[var(--foreground)]">{p.path_with_namespace}</span>
+                          </label>
+                          <IndexStatusBadge status={p.index_status} />
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
-            <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={forceReindex}
-                onChange={(e) => setForceReindex(e.target.checked)}
-                className="accent-[var(--accent-primary)]"
-              />
-              <span className="text-sm text-[var(--foreground)]">Force Re-index</span>
-              <span className="text-xs text-[var(--muted)]">(ignore cache, re-index all selected)</span>
-            </label>
+                {/* Group list */}
+                {groups.length === 0 ? (
+                  <p className="text-sm text-[var(--muted)]">No groups configured (set GITLAB_BATCH_GROUPS).</p>
+                ) : (
+                  <div className="space-y-1 mb-4">
+                    {groups.map((group) => {
+                      const isExpanded = expandedGroups.has(group.id);
+                      const isGroupSelected = selectedGroups.has(group.id);
+                      const gProjects = groupProjects[group.id] || [];
+                      const isLoadingGroup = loadingGroups.has(group.id);
 
-            {stats?.last_batch_run && (
-              <span className="text-sm text-[var(--muted)]">
-                Last run: {new Date(stats.last_batch_run).toLocaleString()}
-              </span>
+                      const selectedInGroup = gProjects.filter((p) => selectedProjects.has(p.id)).length;
+                      const isIndeterminate = !isGroupSelected && selectedInGroup > 0;
+
+                      return (
+                        <div key={group.id}>
+                          <div className="flex items-center gap-2 p-2 rounded-md hover:bg-[var(--accent-primary)]/5">
+                            <button
+                              onClick={() => toggleGroupExpand(group.id)}
+                              className="p-1 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
+                            >
+                              {isExpanded ? <FaChevronDown className="text-xs" /> : <FaChevronRight className="text-xs" />}
+                            </button>
+                            <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={isGroupSelected}
+                                ref={(el) => {
+                                  if (el) el.indeterminate = isIndeterminate;
+                                }}
+                                onChange={() => toggleGroupSelect(group.id)}
+                                className="accent-[var(--accent-primary)]"
+                              />
+                              <span className="font-medium text-sm text-[var(--foreground)]">{group.name}</span>
+                              <span className="text-xs text-[var(--muted)]">({group.full_path})</span>
+                              {gProjects.length > 0 && (
+                                <span className="text-xs text-[var(--muted)]">
+                                  &middot; {gProjects.length} projects
+                                </span>
+                              )}
+                            </label>
+                          </div>
+
+                          {isExpanded && (
+                            <div className="ml-10 border-l border-[var(--border-color)] pl-3 pb-1">
+                              {isLoadingGroup ? (
+                                <p className="text-xs text-[var(--muted)] py-2">Loading projects...</p>
+                              ) : gProjects.length === 0 ? (
+                                <p className="text-xs text-[var(--muted)] py-2">No projects in this group.</p>
+                              ) : (
+                                gProjects.map((p) => (
+                                  <div
+                                    key={p.id}
+                                    className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--accent-primary)]/5"
+                                  >
+                                    <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedProjects.has(p.id)}
+                                        onChange={() => toggleProjectSelect(p.id, group.id)}
+                                        className="accent-[var(--accent-primary)]"
+                                      />
+                                      <span className="text-sm text-[var(--foreground)]">{p.path_with_namespace}</span>
+                                    </label>
+                                    <IndexStatusBadge status={p.index_status} />
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Action bar */}
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-3 border-t border-[var(--border-color)]">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => triggerOperation('batch_index')}
+                      disabled={batchStatus?.running || selectedCount === 0}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent-primary)] text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Full pipeline: git pull + embedding + wiki generation"
+                    >
+                      <FaPlay className="text-xs" />
+                      {batchStatus?.running && batchStatus.operation === 'batch_index'
+                        ? 'Running...'
+                        : selectedCount > 0
+                          ? `Full Index (${selectedCount})`
+                          : 'Select projects'}
+                    </button>
+
+                    <button
+                      onClick={() => triggerOperation('reindex')}
+                      disabled={batchStatus?.running || selectedCount === 0}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Only git pull + re-embedding, no wiki generation"
+                    >
+                      <FaDatabase className="text-xs" />
+                      {batchStatus?.running && batchStatus.operation === 'reindex'
+                        ? 'Running...'
+                        : 'Reindex Only'}
+                    </button>
+
+                    <button
+                      onClick={() => triggerOperation('regenerate_wiki')}
+                      disabled={batchStatus?.running || selectedCount === 0}
+                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Only regenerate wiki cache using existing embeddings"
+                    >
+                      <FaWikipediaW className="text-xs" />
+                      {batchStatus?.running && batchStatus.operation === 'regenerate_wiki'
+                        ? 'Running...'
+                        : 'Regen Wiki Only'}
+                    </button>
+                  </div>
+
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={forceReindex}
+                      onChange={(e) => setForceReindex(e.target.checked)}
+                      className="accent-[var(--accent-primary)]"
+                    />
+                    <span className="text-sm text-[var(--foreground)]">Force Re-index</span>
+                    <span className="text-xs text-[var(--muted)]">(ignore cache, re-index all selected)</span>
+                  </label>
+
+                  {stats?.last_batch_run && (
+                    <span className="text-sm text-[var(--muted)]">
+                      Last run: {new Date(stats.last_batch_run).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+
+            {/* Progress (shared across both tabs) */}
+            {batchStatus?.running && (
+              <div className="mt-4 space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-[var(--foreground)]">
+                    <span className="font-medium text-[var(--muted)] mr-2">
+                      {batchStatus.operation === 'reindex' ? '[Reindex]' :
+                       batchStatus.operation === 'regenerate_wiki' ? '[Wiki Regen]' :
+                       '[Full Index]'}
+                    </span>
+                    {batchStatus.progress.current_project || 'Processing...'}
+                  </span>
+                  {batchStatus.progress.total && (
+                    <span className="text-[var(--muted)]">
+                      {batchStatus.progress.current}/{batchStatus.progress.total}
+                    </span>
+                  )}
+                </div>
+                {batchStatus.progress.total && (
+                  <div className="w-full bg-[var(--border-color)] rounded-full h-2.5">
+                    <div
+                      className="bg-[var(--accent-primary)] h-2.5 rounded-full transition-all"
+                      style={{
+                        width: `${Math.round(((batchStatus.progress.current ?? 0) / batchStatus.progress.total) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Last result (shared across both tabs) */}
+            {!batchStatus?.running && batchStatus?.last_result && Object.keys(batchStatus.last_result).length > 0 && (
+              <div className="mt-4 p-3 rounded-md bg-[var(--background)] border border-[var(--border-color)] text-sm">
+                <h3 className="font-medium text-[var(--foreground)] mb-2">Last Result</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[var(--muted)]">
+                  {Object.entries(batchStatus.last_result).map(([k, v]) => (
+                    <div key={k}>
+                      <span className="font-medium">{k}:</span> {String(v)}
+                    </div>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
-
-          {/* Progress */}
-          {batchStatus?.running && batchStatus.progress?.total && (
-            <div className="mt-4 space-y-2">
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-[var(--foreground)]">
-                  <span className="font-medium text-[var(--muted)] mr-2">
-                    {batchStatus.operation === 'reindex' ? '[Reindex]' :
-                     batchStatus.operation === 'regenerate_wiki' ? '[Wiki Regen]' :
-                     '[Full Index]'}
-                  </span>
-                  {batchStatus.progress.current_project || 'Processing...'}
-                </span>
-                <span className="text-[var(--muted)]">
-                  {batchStatus.progress.current}/{batchStatus.progress.total}
-                </span>
-              </div>
-              <div className="w-full bg-[var(--border-color)] rounded-full h-2.5">
-                <div
-                  className="bg-[var(--accent-primary)] h-2.5 rounded-full transition-all"
-                  style={{
-                    width: `${Math.round(((batchStatus.progress.current ?? 0) / batchStatus.progress.total) * 100)}%`,
-                  }}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Last result */}
-          {!batchStatus?.running && batchStatus?.last_result && Object.keys(batchStatus.last_result).length > 0 && (
-            <div className="mt-4 p-3 rounded-md bg-[var(--background)] border border-[var(--border-color)] text-sm">
-              <h3 className="font-medium text-[var(--foreground)] mb-2">Last Result</h3>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[var(--muted)]">
-                {Object.entries(batchStatus.last_result).map(([k, v]) => (
-                  <div key={k}>
-                    <span className="font-medium">{k}:</span> {String(v)}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </section>
 
         {/* ================================================================ */}

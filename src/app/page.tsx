@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { FaWikipediaW, FaGitlab, FaSearch, FaSignOutAlt, FaBookOpen, FaCog } from 'react-icons/fa';
+import { FaWikipediaW, FaGitlab, FaSearch, FaSignOutAlt, FaBookOpen, FaCog, FaChevronRight, FaChevronDown, FaFolder } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
@@ -49,6 +49,7 @@ export default function Home() {
   const [projects, setProjects] = useState<GitLabProject[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   // Fetch accessible & indexed projects
   useEffect(() => {
@@ -85,6 +86,37 @@ export default function Home() {
         (p.description && p.description.toLowerCase().includes(q))
     );
   }, [projects, searchQuery]);
+
+  // Group projects by GitLab group path
+  const groupedProjects = useMemo(() => {
+    const groups: Record<string, GitLabProject[]> = {};
+    for (const p of filteredProjects) {
+      const parts = p.path_with_namespace.split('/');
+      const groupPath = parts.slice(0, -1).join('/') || 'Other';
+      (groups[groupPath] ??= []).push(p);
+    }
+    return Object.entries(groups).sort(([a], [b]) => a.localeCompare(b));
+  }, [filteredProjects]);
+
+  // When searching, auto-expand all groups that have matching projects
+  const effectiveExpandedGroups = useMemo(() => {
+    if (searchQuery.trim()) {
+      return new Set(groupedProjects.map(([groupPath]) => groupPath));
+    }
+    return expandedGroups;
+  }, [searchQuery, groupedProjects, expandedGroups]);
+
+  const toggleGroup = (groupPath: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupPath)) {
+        next.delete(groupPath);
+      } else {
+        next.add(groupPath);
+      }
+      return next;
+    });
+  };
 
   // Navigate to wiki page for a project
   const handleProjectClick = (project: GitLabProject) => {
@@ -238,53 +270,84 @@ export default function Home() {
               )}
             </div>
           ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredProjects.map((project) => (
-                <button
-                  key={project.id}
-                  onClick={() => handleProjectClick(project)}
-                  className="text-left p-4 rounded-lg border border-[var(--border-color)] hover:border-[var(--accent-primary)]/50 bg-[var(--background)]/50 hover:bg-[var(--accent-primary)]/5 transition-all group"
-                >
-                  <div className="flex items-start gap-3">
-                    {project.avatar_url ? (
-                      <img
-                        src={project.avatar_url}
-                        alt={project.name}
-                        className="w-10 h-10 rounded-md border border-[var(--border-color)]"
-                      />
-                    ) : (
-                      <div className="w-10 h-10 rounded-md bg-[var(--accent-primary)]/10 flex items-center justify-center">
-                        <FaGitlab className="text-[var(--accent-primary)]" />
+            <div className="space-y-2">
+              {groupedProjects.map(([groupPath, groupItems]) => {
+                const isExpanded = effectiveExpandedGroups.has(groupPath);
+                return (
+                  <div key={groupPath} className="border border-[var(--border-color)] rounded-lg overflow-hidden">
+                    {/* Group header */}
+                    <button
+                      onClick={() => toggleGroup(groupPath)}
+                      className="w-full flex items-center gap-3 px-4 py-3 bg-[var(--background)]/50 hover:bg-[var(--accent-primary)]/5 transition-colors text-left"
+                    >
+                      {isExpanded ? (
+                        <FaChevronDown className="text-xs text-[var(--muted)] shrink-0" />
+                      ) : (
+                        <FaChevronRight className="text-xs text-[var(--muted)] shrink-0" />
+                      )}
+                      <FaFolder className="text-[var(--accent-primary)] shrink-0" />
+                      <span className="font-medium text-[var(--foreground)]">{groupPath}</span>
+                      <span className="text-xs text-[var(--muted)] ml-auto">
+                        {groupItems.length} {groupItems.length === 1 ? 'project' : 'projects'}
+                      </span>
+                    </button>
+
+                    {/* Group projects */}
+                    {isExpanded && (
+                      <div className="p-4 pt-2 border-t border-[var(--border-color)]/50">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {groupItems.map((project) => (
+                            <button
+                              key={project.id}
+                              onClick={() => handleProjectClick(project)}
+                              className="text-left p-4 rounded-lg border border-[var(--border-color)] hover:border-[var(--accent-primary)]/50 bg-[var(--background)]/50 hover:bg-[var(--accent-primary)]/5 transition-all group"
+                            >
+                              <div className="flex items-start gap-3">
+                                {project.avatar_url ? (
+                                  <img
+                                    src={project.avatar_url}
+                                    alt={project.name}
+                                    className="w-10 h-10 rounded-md border border-[var(--border-color)]"
+                                  />
+                                ) : (
+                                  <div className="w-10 h-10 rounded-md bg-[var(--accent-primary)]/10 flex items-center justify-center">
+                                    <FaGitlab className="text-[var(--accent-primary)]" />
+                                  </div>
+                                )}
+                                <div className="flex-1 min-w-0">
+                                  <h3 className="font-medium text-[var(--foreground)] group-hover:text-[var(--accent-primary)] transition-colors truncate">
+                                    {project.name}
+                                  </h3>
+                                  <p className="text-xs text-[var(--muted)] truncate">
+                                    {project.path_with_namespace}
+                                  </p>
+                                </div>
+                              </div>
+                              {project.description && (
+                                <p className="text-xs text-[var(--muted)] mt-2 line-clamp-2">
+                                  {project.description}
+                                </p>
+                              )}
+                              <div className="flex items-center justify-between mt-3 text-xs text-[var(--muted)]">
+                                <span>
+                                  Indexed: {new Date(project.indexed_at).toLocaleDateString()}
+                                </span>
+                                <span className={`px-1.5 py-0.5 rounded text-xs ${
+                                  project.index_status === 'indexed'
+                                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                                    : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                                }`}>
+                                  {project.index_status}
+                                </span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
-                    <div className="flex-1 min-w-0">
-                      <h3 className="font-medium text-[var(--foreground)] group-hover:text-[var(--accent-primary)] transition-colors truncate">
-                        {project.name}
-                      </h3>
-                      <p className="text-xs text-[var(--muted)] truncate">
-                        {project.path_with_namespace}
-                      </p>
-                    </div>
                   </div>
-                  {project.description && (
-                    <p className="text-xs text-[var(--muted)] mt-2 line-clamp-2">
-                      {project.description}
-                    </p>
-                  )}
-                  <div className="flex items-center justify-between mt-3 text-xs text-[var(--muted)]">
-                    <span>
-                      Indexed: {new Date(project.indexed_at).toLocaleDateString()}
-                    </span>
-                    <span className={`px-1.5 py-0.5 rounded text-xs ${
-                      project.index_status === 'indexed'
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                        : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
-                    }`}>
-                      {project.index_status}
-                    </span>
-                  </div>
-                </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
