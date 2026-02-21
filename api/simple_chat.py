@@ -33,6 +33,64 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Streaming filter: suppress content inside <think>...</think> blocks
+# ---------------------------------------------------------------------------
+
+class ThinkFilter:
+    """State machine that strips <think>...</think> blocks from a text stream."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._in_think = False
+
+    def feed(self, text: str) -> str:
+        self._buf += text
+        output = ""
+        while self._buf:
+            if self._in_think:
+                end = self._buf.find("</think>")
+                if end >= 0:
+                    self._buf = self._buf[end + 8:]
+                    self._in_think = False
+                else:
+                    self._buf = self._buf[-8:] if len(self._buf) > 8 else self._buf
+                    break
+            else:
+                start = self._buf.find("<think>")
+                if start >= 0:
+                    output += self._buf[:start]
+                    self._buf = self._buf[start + 7:]
+                    self._in_think = True
+                else:
+                    safe = len(self._buf) - 7
+                    if safe > 0:
+                        output += self._buf[:safe]
+                        self._buf = self._buf[safe:]
+                    break
+        return output
+
+    def flush(self) -> str:
+        if self._in_think:
+            self._buf = ""
+            return ""
+        result = self._buf
+        self._buf = ""
+        return result
+
+
+async def _strip_think_blocks(stream):
+    """Async generator wrapper that strips <think>...</think> blocks."""
+    tf = ThinkFilter()
+    async for chunk in stream:
+        clean = tf.feed(chunk)
+        if clean:
+            yield clean
+    remaining = tf.flush()
+    if remaining:
+        yield remaining
+
+
 # Initialize FastAPI app
 app = FastAPI(
     title="Simple Chat API",
@@ -520,7 +578,6 @@ async def chat_completions_stream(request: ChatCompletionRequest, raw_request: F
                     async for chunk in response:
                         text = getattr(chunk, 'response', None) or getattr(chunk, 'text', None) or str(chunk)
                         if text and not text.startswith('model=') and not text.startswith('created_at='):
-                            text = text.replace('<think>', '').replace('</think>', '')
                             yield text
                 elif request.provider == "openrouter":
                     try:
@@ -644,7 +701,6 @@ async def chat_completions_stream(request: ChatCompletionRequest, raw_request: F
                             async for chunk in fallback_response:
                                 text = getattr(chunk, 'response', None) or getattr(chunk, 'text', None) or str(chunk)
                                 if text and not text.startswith('model=') and not text.startswith('created_at='):
-                                    text = text.replace('<think>', '').replace('</think>', '')
                                     yield text
                         elif request.provider == "openrouter":
                             try:
@@ -785,8 +841,8 @@ async def chat_completions_stream(request: ChatCompletionRequest, raw_request: F
                     # For other errors, return the error message
                     yield f"\nError: {error_message}"
 
-        # Return streaming response
-        return StreamingResponse(response_stream(), media_type="text/event-stream")
+        # Return streaming response (wrapped with <think> block filter)
+        return StreamingResponse(_strip_think_blocks(response_stream()), media_type="text/event-stream")
 
     except HTTPException:
         raise

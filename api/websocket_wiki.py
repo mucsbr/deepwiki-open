@@ -32,6 +32,77 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Streaming filter: suppress content inside <think>...</think> blocks
+# ---------------------------------------------------------------------------
+
+class ThinkFilter:
+    """State machine that strips <think>...</think> blocks from a text stream."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._in_think = False
+
+    def feed(self, text: str) -> str:
+        """Feed a chunk, return cleaned text to output."""
+        self._buf += text
+        output = ""
+
+        while self._buf:
+            if self._in_think:
+                end = self._buf.find("</think>")
+                if end >= 0:
+                    self._buf = self._buf[end + 8:]
+                    self._in_think = False
+                else:
+                    # Keep tail in case </think> is split across chunks
+                    self._buf = self._buf[-8:] if len(self._buf) > 8 else self._buf
+                    break
+            else:
+                start = self._buf.find("<think>")
+                if start >= 0:
+                    output += self._buf[:start]
+                    self._buf = self._buf[start + 7:]
+                    self._in_think = True
+                else:
+                    # Keep tail in case <think> is split across chunks
+                    safe = len(self._buf) - 7
+                    if safe > 0:
+                        output += self._buf[:safe]
+                        self._buf = self._buf[safe:]
+                    break
+
+        return output
+
+    def flush(self) -> str:
+        """Flush remaining buffer (call when stream ends)."""
+        if self._in_think:
+            self._buf = ""
+            return ""
+        result = self._buf
+        self._buf = ""
+        return result
+
+
+class FilteredWS:
+    """Wraps a WebSocket so all send_text() calls pass through ThinkFilter."""
+
+    def __init__(self, ws: WebSocket) -> None:
+        self._ws = ws
+        self._tf = ThinkFilter()
+
+    async def send_text(self, text: str) -> None:
+        clean = self._tf.feed(text)
+        if clean:
+            await self._ws.send_text(clean)
+
+    async def close(self, code: int = 1000) -> None:
+        remaining = self._tf.flush()
+        if remaining:
+            await self._ws.send_text(remaining)
+        await self._ws.close(code=code)
+
+
 # Models for the API
 class ChatMessage(BaseModel):
     role: str  # 'user' or 'assistant'
@@ -632,6 +703,9 @@ This file contains...
                 }
             )
 
+        # Wrap websocket with ThinkFilter so ALL providers get <think> filtering
+        websocket = FilteredWS(websocket)
+
         # Process the response based on the provider
         try:
             if request.provider == "ollama":
@@ -659,8 +733,7 @@ This file contains...
                             text = message.get("content")
 
                     if isinstance(text, str) and text and not text.startswith('model=') and not text.startswith('created_at='):
-                        clean_text = text.replace('<think>', '').replace('</think>', '')
-                        await websocket.send_text(clean_text)
+                        await websocket.send_text(text)
                 # Explicitly close the WebSocket connection after the response is complete
                 await websocket.close()
             elif request.provider == "openrouter":
@@ -811,7 +884,6 @@ This file contains...
                         async for chunk in fallback_response:
                             text = getattr(chunk, 'response', None) or getattr(chunk, 'text', None) or str(chunk)
                             if text and not text.startswith('model=') and not text.startswith('created_at='):
-                                text = text.replace('<think>', '').replace('</think>', '')
                                 await websocket.send_text(text)
                     elif request.provider == "openrouter":
                         try:

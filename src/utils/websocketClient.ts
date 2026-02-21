@@ -3,17 +3,36 @@
  * This replaces the HTTP streaming endpoint with a WebSocket connection
  */
 
-// Get the server base URL from environment or use default
+// Get the server base URL.
+// In the browser, process.env.SERVER_BASE_URL is NOT available (requires
+// NEXT_PUBLIC_ prefix).  We derive the backend URL from the current page
+// location (same hostname, backend port 8001) as a reliable fallback.
 declare const process: { env: Record<string, string | undefined> } | undefined;
-const SERVER_BASE_URL = (typeof process !== 'undefined' ? process?.env?.SERVER_BASE_URL : undefined) || 'http://localhost:8001';
+
+function getServerBaseUrl(): string {
+  if (typeof window !== 'undefined') {
+    // 1) Explicit public env var (set at build time)
+    const publicUrl = typeof process !== 'undefined'
+      ? process?.env?.NEXT_PUBLIC_SERVER_BASE_URL
+      : undefined;
+    if (publicUrl) return publicUrl;
+
+    // 2) Derive from browser location – same hostname, backend port 8001
+    const { protocol, hostname } = window.location;
+    return `${protocol}//${hostname}:8001`;
+  }
+  // Server-side (shouldn't normally reach here for WebSocket client)
+  return (typeof process !== 'undefined' ? process?.env?.SERVER_BASE_URL : undefined) || 'http://localhost:8001';
+}
 
 // JWT storage key (must match AuthContext)
 const JWT_STORAGE_KEY = 'deepwiki_jwt';
 
 // Convert HTTP URL to WebSocket URL, appending JWT token
 export const getWebSocketUrl = () => {
+  const baseUrl = getServerBaseUrl();
   // Replace http:// with ws:// or https:// with wss://
-  const wsBaseUrl = SERVER_BASE_URL.replace(/^http/, 'ws');
+  const wsBaseUrl = baseUrl.replace(/^http/, 'ws');
   let url = `${wsBaseUrl}/ws/chat`;
 
   // Append JWT token from localStorage if available
