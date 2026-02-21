@@ -245,7 +245,7 @@ async def _call_llm(provider: str, model: str, prompt: str, label: str = "") -> 
         stripped = re.sub(r"<think>[\s\S]*?</think>", "", result).strip()
         logger.info(
             "[_call_llm] OK %s | raw_chars=%d stripped_chars=%d | first_200=%s",
-            label or "unnamed", len(result), len(stripped), repr(stripped[:200]),
+            label or "unnamed", len(result), len(stripped), repr(stripped),
         )
         return result
     except Exception as exc:
