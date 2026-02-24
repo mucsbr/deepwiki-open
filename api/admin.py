@@ -647,3 +647,56 @@ async def get_batch_index_status(_admin: dict = Depends(require_admin)):
         "last_result": _batch_status["last_result"],
         "last_run": _batch_status.get("last_run"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Repository relations endpoints
+# ---------------------------------------------------------------------------
+
+
+class RelationsAnalyzeRequest(BaseModel):
+    provider: Optional[str] = "google"
+    model: Optional[str] = None
+
+
+@admin_router.get("/repo-relations")
+async def get_repo_relations(_admin: dict = Depends(require_admin)):
+    """Return the cached repository relations graph."""
+    from api.repo_relations import load_relations, generate_mermaid_graph
+
+    data = load_relations()
+    data["mermaid"] = generate_mermaid_graph(data)
+    return data
+
+
+@admin_router.post("/repo-relations/analyze")
+async def trigger_relation_analysis(
+    body: Optional[RelationsAnalyzeRequest] = None,
+    _admin: dict = Depends(require_admin),
+):
+    """Trigger async relation analysis across all indexed repos."""
+    from api.repo_relations import analyze_all_relations, get_analysis_status
+
+    status = get_analysis_status()
+    if status["running"]:
+        raise HTTPException(status_code=409, detail="Analysis already running")
+
+    provider = body.provider if body else "google"
+    model = body.model if body else None
+
+    async def _run():
+        try:
+            await analyze_all_relations(provider=provider, model=model)
+        except Exception as exc:
+            logger.error("Relation analysis background task failed: %s", exc)
+
+    asyncio.create_task(_run())
+    return {"message": "Relation analysis started"}
+
+
+@admin_router.get("/repo-relations/status")
+async def get_relation_analysis_status(_admin: dict = Depends(require_admin)):
+    """Return the current relation analysis status."""
+    from api.repo_relations import get_analysis_status
+
+    return get_analysis_status()

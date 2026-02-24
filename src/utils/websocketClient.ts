@@ -62,6 +62,8 @@ export interface ChatCompletionRequest {
   language?: string;
   excluded_dirs?: string;
   excluded_files?: string;
+  additional_repos?: string[];
+  auto_relate?: boolean;
 }
 
 /**

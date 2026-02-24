@@ -18,6 +18,7 @@ import {
   FaChevronDown,
   FaRedo,
   FaBookOpen,
+  FaProjectDiagram,
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
@@ -451,6 +452,14 @@ export default function AdminPage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Link
+              href="/admin/relations"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:bg-[var(--accent-primary)]/5 transition-colors"
+              title="View Repository Relations"
+            >
+              <FaProjectDiagram className="text-xs" />
+              Relations
+            </Link>
             <button
               onClick={fetchAll}
               className="p-2 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"

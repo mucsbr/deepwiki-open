@@ -112,7 +112,7 @@ class ChatCompletionRequest(BaseModel):
     """
     Model for requesting a chat completion.
     """
-    repo_url: str = Field(..., description="URL of the repository to query")
+    repo_url: str = Field("", description="URL of the repository to query (empty for global Ask)")
     messages: List[ChatMessage] = Field(..., description="List of chat messages")
     filePath: Optional[str] = Field(None, description="Optional path to a file in the repository to include in the prompt")
     token: Optional[str] = Field(None, description="Personal access token for private repositories")
@@ -130,6 +130,10 @@ class ChatCompletionRequest(BaseModel):
     excluded_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to exclude from processing")
     included_dirs: Optional[str] = Field(None, description="Comma-separated list of directories to include exclusively")
     included_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to include exclusively")
+
+    # Cross-repo / global ask
+    additional_repos: Optional[List[str]] = Field(None, description="Additional repository URLs for cross-repo search")
+    auto_relate: bool = Field(False, description="Automatically include related repos from relations graph")
 
 async def _verify_ws_auth(websocket: WebSocket) -> dict | None:
     """
@@ -178,17 +182,18 @@ async def handle_websocket_chat(websocket: WebSocket):
 
         # Extract project path from repo_url (supports nested GitLab groups)
         repo_url = request.repo_url
-        parsed_url = urlparse(repo_url)
-        project_path = parsed_url.path.strip("/").removesuffix(".git")
-        if project_path and GITLAB_URL:
-            gitlab_token = current_user.get("gitlab_access_token", "")
-            user_id = current_user.get("gitlab_user_id")
+        if repo_url:
+            parsed_url = urlparse(repo_url)
+            project_path = parsed_url.path.strip("/").removesuffix(".git")
+            if project_path and GITLAB_URL:
+                gitlab_token = current_user.get("gitlab_access_token", "")
+                user_id = current_user.get("gitlab_user_id")
 
-            has_access = await check_repo_access(gitlab_token, project_path, GITLAB_URL, user_id)
-            if not has_access:
-                await websocket.send_text(f"Error: You do not have access to {project_path}")
-                await websocket.close(code=4003)
-                return
+                has_access = await check_repo_access(gitlab_token, project_path, GITLAB_URL, user_id)
+                if not has_access:
+                    await websocket.send_text(f"Error: You do not have access to {project_path}")
+                    await websocket.close(code=4003)
+                    return
 
         # Log incoming provider/model
         logger.info(f"[handle_websocket_chat] Incoming request: provider='{request.provider}', model='{request.model}'")
@@ -215,10 +220,47 @@ async def handle_websocket_chat(websocket: WebSocket):
                     logger.warning(f"Request exceeds recommended token limit ({tokens} > 7500)")
                     input_too_large = True
 
+        # Determine if this is a multi-repo or global ask
+        additional_repos = request.additional_repos or []
+        is_global_ask = not request.repo_url
+
+        # Auto-relate: pull related repos from relations graph
+        if request.auto_relate and request.repo_url:
+            try:
+                from api.repo_relations import get_related_repos
+                from urllib.parse import urlparse
+                parsed = urlparse(request.repo_url)
+                project_path = parsed.path.strip("/").removesuffix(".git")
+                related = get_related_repos(project_path)
+                # Convert project paths back to URLs
+                if related and GITLAB_URL:
+                    for rp in related:
+                        rel_url = f"{GITLAB_URL.rstrip('/')}/{rp}"
+                        if rel_url not in additional_repos and rel_url != request.repo_url:
+                            additional_repos.append(rel_url)
+                    logger.info(f"Auto-related repos: {additional_repos}")
+            except Exception as e:
+                logger.warning(f"Failed to auto-relate repos: {e}")
+
+        # Global ask: load all indexed repos
+        if is_global_ask:
+            try:
+                from api.metadata_store import get_all_indexed_projects
+                indexed = get_all_indexed_projects()
+                if GITLAB_URL:
+                    for path, meta in indexed.items():
+                        if meta.get("status") == "indexed":
+                            repo_url_candidate = f"{GITLAB_URL.rstrip('/')}/{path}"
+                            if repo_url_candidate not in additional_repos:
+                                additional_repos.append(repo_url_candidate)
+                logger.info(f"Global ask: loading {len(additional_repos)} repos")
+            except Exception as e:
+                logger.warning(f"Failed to load all repos for global ask: {e}")
+
+        use_multi_rag = bool(additional_repos)
+
         # Create a new RAG instance for this request
         try:
-            request_rag = RAG(provider=request.provider, model=request.model)
-
             # Extract custom file filter parameters if provided
             excluded_dirs = None
             excluded_files = None
@@ -238,8 +280,30 @@ async def handle_websocket_chat(websocket: WebSocket):
                 included_files = [unquote(file_pattern) for file_pattern in request.included_files.split('\n') if file_pattern.strip()]
                 logger.info(f"Using custom included files: {included_files}")
 
-            request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files)
-            logger.info(f"Retriever prepared for {request.repo_url}")
+            if use_multi_rag:
+                from api.multi_rag import MultiRepoRAG
+                request_rag = MultiRepoRAG(provider=request.provider, model=request.model)
+                # Combine primary repo (if present) with additional repos
+                all_repo_urls = []
+                if request.repo_url:
+                    all_repo_urls.append(request.repo_url)
+                all_repo_urls.extend(additional_repos)
+                # Deduplicate
+                all_repo_urls = list(dict.fromkeys(all_repo_urls))
+                request_rag.prepare_multi_retriever(
+                    all_repo_urls,
+                    repo_type=request.type,
+                    access_token=request.token,
+                    excluded_dirs=excluded_dirs,
+                    excluded_files=excluded_files,
+                    included_dirs=included_dirs,
+                    included_files=included_files,
+                )
+                logger.info(f"Multi-repo retriever prepared for {len(all_repo_urls)} repos")
+            else:
+                request_rag = RAG(provider=request.provider, model=request.model)
+                request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files)
+                logger.info(f"Retriever prepared for {request.repo_url}")
         except ValueError as e:
             if "No valid documents with embeddings found" in str(e):
                 logger.error(f"No valid embeddings found: {str(e)}")
@@ -375,8 +439,8 @@ async def handle_websocket_chat(websocket: WebSocket):
                 context_text = ""
 
         # Get repository information
-        repo_url = request.repo_url
-        repo_name = repo_url.split("/")[-1] if "/" in repo_url else repo_url
+        repo_url = request.repo_url or "multiple repositories"
+        repo_name = repo_url.split("/")[-1] if "/" in repo_url else (repo_url or "all repositories")
 
         # Determine repository type
         repo_type = request.type

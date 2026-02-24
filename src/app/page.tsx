@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { FaWikipediaW, FaGitlab, FaSearch, FaSignOutAlt, FaBookOpen, FaCog, FaChevronRight, FaChevronDown, FaFolder } from 'react-icons/fa';
+import { FaWikipediaW, FaGitlab, FaSearch, FaSignOutAlt, FaBookOpen, FaCog, FaChevronRight, FaChevronDown, FaFolder, FaProjectDiagram, FaComments } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
@@ -212,15 +212,33 @@ export default function Home() {
               ))}
             </select>
 
-            {/* Admin link */}
+            {/* Global Ask */}
+            <Link
+              href="/ask"
+              title="Global Ask - Ask across all repositories"
+              className="p-2 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
+            >
+              <FaComments />
+            </Link>
+
+            {/* Admin links */}
             {isAdmin && (
-              <Link
-                href="/admin"
-                title="Admin Dashboard"
-                className="p-2 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
-              >
-                <FaCog />
-              </Link>
+              <>
+                <Link
+                  href="/admin/relations"
+                  title="Repository Relations"
+                  className="p-2 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
+                >
+                  <FaProjectDiagram />
+                </Link>
+                <Link
+                  href="/admin"
+                  title="Admin Dashboard"
+                  className="p-2 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
+                >
+                  <FaCog />
+                </Link>
+              </>
             )}
 
             {/* User avatar + name */}

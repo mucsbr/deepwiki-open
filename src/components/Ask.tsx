@@ -41,6 +41,8 @@ interface AskProps {
   customModel?: string;
   language?: string;
   onRef?: (ref: { clearConversation: () => void }) => void;
+  relatedRepos?: string[];
+  isGlobalAsk?: boolean;
 }
 
 const Ask: React.FC<AskProps> = ({
@@ -50,12 +52,18 @@ const Ask: React.FC<AskProps> = ({
   isCustomModel = false,
   customModel = '',
   language = 'en',
-  onRef
+  onRef,
+  relatedRepos = [],
+  isGlobalAsk = false,
 }) => {
   const [question, setQuestion] = useState('');
   const [response, setResponse] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [deepResearch, setDeepResearch] = useState(false);
+
+  // Cross-repo state
+  const [selectedRelatedRepos, setSelectedRelatedRepos] = useState<Set<string>>(new Set(relatedRepos));
+  const [autoRelate, setAutoRelate] = useState(!isGlobalAsk);
 
   // Get JWT for API authorization
   const jwtToken = typeof window !== 'undefined' ? localStorage.getItem('deepwiki_jwt') : null;
@@ -317,14 +325,24 @@ const Ask: React.FC<AskProps> = ({
       setResponse('');
 
       // Prepare the request body
+      const contRepoUrl = isGlobalAsk ? '' : getRepoUrl(repoInfo);
       const requestBody: ChatCompletionRequest = {
-        repo_url: getRepoUrl(repoInfo),
+        repo_url: contRepoUrl,
         type: repoInfo.type,
         messages: newHistory.map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content })),
         provider: selectedProvider,
         model: isCustomSelectedModel ? customSelectedModel : selectedModel,
         language: language
       };
+
+      // Add cross-repo fields
+      const contAdditionalRepos = Array.from(selectedRelatedRepos);
+      if (contAdditionalRepos.length > 0) {
+        requestBody.additional_repos = contAdditionalRepos;
+      }
+      if (autoRelate && !isGlobalAsk) {
+        requestBody.auto_relate = true;
+      }
 
       // Add tokens if available
       if (repoInfo?.token) {
@@ -560,14 +578,24 @@ const Ask: React.FC<AskProps> = ({
       setConversationHistory(newHistory);
 
       // Prepare request body
+      const repoUrl = isGlobalAsk ? '' : getRepoUrl(repoInfo);
       const requestBody: ChatCompletionRequest = {
-        repo_url: getRepoUrl(repoInfo),
+        repo_url: repoUrl,
         type: repoInfo.type,
         messages: newHistory.map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content })),
         provider: selectedProvider,
         model: isCustomSelectedModel ? customSelectedModel : selectedModel,
         language: language
       };
+
+      // Add cross-repo fields
+      const additionalRepos = Array.from(selectedRelatedRepos);
+      if (additionalRepos.length > 0) {
+        requestBody.additional_repos = additionalRepos;
+      }
+      if (autoRelate && !isGlobalAsk) {
+        requestBody.auto_relate = true;
+      }
 
       // Add tokens if available
       if (repoInfo?.token) {
@@ -693,6 +721,61 @@ const Ask: React.FC<AskProps> = ({
               )}
             </button>
           </div>
+
+          {/* Cross-repo controls */}
+          {(relatedRepos.length > 0 || isGlobalAsk) && (
+            <div className="mt-3 space-y-2">
+              {!isGlobalAsk && relatedRepos.length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs text-gray-500 dark:text-gray-400">Related repos:</span>
+                    <label className="flex items-center gap-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={autoRelate}
+                        onChange={() => setAutoRelate(!autoRelate)}
+                        className="sr-only"
+                      />
+                      <div className={`w-8 h-4 rounded-full transition-colors ${autoRelate ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}`}>
+                        <div className={`w-3 h-3 rounded-full bg-white transform transition-transform mt-0.5 ${autoRelate ? 'translate-x-4 ml-0.5' : 'translate-x-0.5'}`}></div>
+                      </div>
+                      <span className="text-xs text-gray-500 dark:text-gray-400">Auto</span>
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {relatedRepos.map((repo) => {
+                      const isSelected = selectedRelatedRepos.has(repo);
+                      const shortName = repo.split('/').pop() || repo;
+                      return (
+                        <button
+                          key={repo}
+                          onClick={() => {
+                            const next = new Set(selectedRelatedRepos);
+                            if (isSelected) next.delete(repo);
+                            else next.add(repo);
+                            setSelectedRelatedRepos(next);
+                          }}
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border transition-colors ${
+                            isSelected
+                              ? 'bg-blue-100 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300'
+                              : 'bg-gray-100 dark:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-500 dark:text-gray-400'
+                          }`}
+                          title={repo}
+                        >
+                          {shortName}
+                          {isSelected && (
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Deep Research toggle */}
           <div className="flex items-center mt-2 justify-between">
