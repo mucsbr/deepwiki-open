@@ -435,26 +435,26 @@ export default function AdminPage() {
     : '0';
 
   return (
-    <div className="min-h-screen paper-texture p-4 md:p-8 flex flex-col">
+    <div className="min-h-screen bg-[var(--background)] p-4 md:p-8 flex flex-col">
       {/* Header */}
       <header className="max-w-7xl mx-auto mb-6 w-full">
-        <div className="flex items-center justify-between bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4">
+        <div className="flex items-center justify-between glass-nav rounded-2xl p-4">
           <div className="flex items-center gap-3">
             <Link href="/" className="p-2 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors">
               <FaArrowLeft />
             </Link>
-            <div className="bg-[var(--accent-primary)] p-2 rounded-lg">
+            <div className="bg-[var(--accent-primary)] p-2 rounded-xl">
               <FaWikipediaW className="text-xl text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-[var(--accent-primary)]">Admin Dashboard</h1>
+              <h1 className="text-xl font-semibold tracking-tight text-[var(--accent-primary)]">Admin Dashboard</h1>
               <p className="text-xs text-[var(--muted)]">System Management</p>
             </div>
           </div>
           <div className="flex items-center gap-3">
             <Link
               href="/admin/relations"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:bg-[var(--accent-primary)]/5 transition-colors"
+              className="btn-apple-secondary inline-flex items-center gap-1.5 !rounded-xl"
               title="View Repository Relations"
             >
               <FaProjectDiagram className="text-xs" />
@@ -503,7 +503,7 @@ export default function AdminPage() {
         {/* ================================================================ */}
         {/* Tab Navigation */}
         {/* ================================================================ */}
-        <section className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)]">
+        <section className="glass-card">
           {/* Tab bar */}
           <div className="flex border-b border-[var(--border-color)]">
             <button
@@ -547,7 +547,7 @@ export default function AdminPage() {
             {activeTab === 'indexed' && (
               <>
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
-                  <h2 className="text-lg font-bold text-[var(--foreground)]">
+                  <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)]">
                     Indexed Projects ({filteredProjects.length})
                   </h2>
                   <div className="flex items-center gap-2">
@@ -671,7 +671,7 @@ export default function AdminPage() {
             {/* ============================================================ */}
             {activeTab === 'batch' && (
               <>
-                <h2 className="text-lg font-bold text-[var(--foreground)] mb-4">Batch Indexing</h2>
+                <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)] mb-4">Batch Indexing</h2>
 
                 {/* Project search */}
                 <div className="mb-4">
@@ -808,7 +808,7 @@ export default function AdminPage() {
                     <button
                       onClick={() => triggerOperation('batch_index')}
                       disabled={batchStatus?.running || selectedCount === 0}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[var(--accent-primary)] text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="btn-apple inline-flex items-center gap-2 !rounded-xl"
                       title="Full pipeline: git pull + embedding + wiki generation"
                     >
                       <FaPlay className="text-xs" />
@@ -822,7 +822,7 @@ export default function AdminPage() {
                     <button
                       onClick={() => triggerOperation('reindex')}
                       disabled={batchStatus?.running || selectedCount === 0}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="btn-apple inline-flex items-center gap-2 !rounded-xl !bg-blue-600 hover:!bg-blue-700"
                       title="Only git pull + re-embedding, no wiki generation"
                     >
                       <FaDatabase className="text-xs" />
@@ -834,7 +834,7 @@ export default function AdminPage() {
                     <button
                       onClick={() => triggerOperation('regenerate_wiki')}
                       disabled={batchStatus?.running || selectedCount === 0}
-                      className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-green-600 text-white font-medium hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="btn-apple inline-flex items-center gap-2 !rounded-xl !bg-green-600 hover:!bg-green-700"
                       title="Only regenerate wiki cache using existing embeddings"
                     >
                       <FaWikipediaW className="text-xs" />
@@ -914,8 +914,8 @@ export default function AdminPage() {
         {/* ================================================================ */}
         {/* Area 4: System Configuration */}
         {/* ================================================================ */}
-        <section className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-6">
-          <h2 className="text-lg font-bold text-[var(--foreground)] mb-4">System Configuration</h2>
+        <section className="glass-card p-6">
+          <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)] mb-4">System Configuration</h2>
           {config ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
               <ConfigItem label="GitLab URL" value={config.gitlab_url} />
@@ -931,7 +931,7 @@ export default function AdminPage() {
       </main>
 
       <footer className="max-w-7xl mx-auto mt-8 w-full">
-        <div className="flex justify-center bg-[var(--card-bg)] rounded-lg p-4 border border-[var(--border-color)] shadow-custom">
+        <div className="flex justify-center glass-card p-4">
           <p className="text-[var(--muted)] text-sm">DeepWiki Admin Dashboard</p>
         </div>
       </footer>
@@ -955,13 +955,15 @@ function StatCard({
   highlight?: boolean;
 }) {
   return (
-    <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4 flex items-center gap-3">
-      <div className="text-2xl">{icon}</div>
-      <div>
-        <p className="text-xs text-[var(--muted)]">{label}</p>
-        <p className={`text-xl font-bold ${highlight ? 'text-red-500' : 'text-[var(--foreground)]'}`}>
-          {value}
-        </p>
+    <div className="glass-card p-5">
+      <div className="flex items-center gap-3">
+        <div className="text-2xl">{icon}</div>
+        <div>
+          <p className="text-xs text-[var(--muted)] uppercase tracking-wider font-medium">{label}</p>
+          <p className={`text-3xl font-light tracking-tight ${highlight ? 'text-red-500' : 'text-[var(--foreground)]'}`}>
+            {value}
+          </p>
+        </div>
       </div>
     </div>
   );

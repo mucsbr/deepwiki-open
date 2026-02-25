@@ -109,7 +109,7 @@ export default function ModelSelectionModal({
   return (
     <div className="fixed inset-0 z-50 overflow-y-auto">
       <div className="flex min-h-screen items-center justify-center p-4 text-center bg-black/50">
-        <div className="relative transform overflow-hidden rounded-lg bg-[var(--card-bg)] text-left shadow-xl transition-all sm:my-8 sm:max-w-lg sm:w-full">
+        <div className="relative transform overflow-hidden glass-card !rounded-2xl text-left shadow-xl transition-all sm:my-8 sm:max-w-lg sm:w-full">
           {/* Modal header with close button */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border-color)]">
             <h3 className="text-lg font-medium text-[var(--accent-primary)]">

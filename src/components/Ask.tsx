@@ -695,7 +695,7 @@ const Ask: React.FC<AskProps> = ({
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder={messages.ask?.placeholder || 'What would you like to know about this codebase?'}
-              className="block w-full rounded-md border border-[var(--border-color)] bg-[var(--input-bg)] text-[var(--foreground)] px-5 py-3.5 text-base shadow-sm focus:border-[var(--accent-primary)] focus:ring-2 focus:ring-[var(--accent-primary)]/30 focus:outline-none transition-all"
+              className="input-apple block w-full !rounded-xl px-5 py-3.5 text-base"
               style={{ paddingRight: `${buttonWidth + 24}px` }}
               disabled={isLoading}
             />
@@ -703,11 +703,11 @@ const Ask: React.FC<AskProps> = ({
               ref={buttonRef}
               type="submit"
               disabled={isLoading || !question.trim()}
-              className={`absolute right-3 top-1/2 transform -translate-y-1/2 px-4 py-2 rounded-md font-medium text-sm ${
+              className={`absolute right-3 top-1/2 transform -translate-y-1/2 btn-apple !rounded-xl flex items-center gap-1.5 ${
                 isLoading || !question.trim()
-                  ? 'bg-[var(--button-disabled-bg)] text-[var(--button-disabled-text)] cursor-not-allowed'
-                  : 'bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/90 shadow-sm'
-              } transition-all duration-200 flex items-center gap-1.5`}
+                  ? '!opacity-40 !cursor-not-allowed'
+                  : ''
+              }`}
             >
               {isLoading ? (
                 <div className="w-4 h-4 rounded-full border-2 border-t-transparent border-white animate-spin" />

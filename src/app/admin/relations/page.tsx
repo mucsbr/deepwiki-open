@@ -9,7 +9,7 @@ import {
   FaSpinner,
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
-import Mermaid from '@/components/Mermaid';
+import RelationGraph from '@/components/RelationGraph';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
 
 interface RepoNode {
@@ -142,11 +142,26 @@ export default function RelationsPage() {
     );
   }
 
+  const edgeTypeBadge = (type: string) => {
+    const colors: Record<string, string> = {
+      depends_on: 'bg-[#0071e3]/10 text-[#0071e3] border-[#0071e3]/20',
+      likely_depends_on: 'bg-[#ff9f0a]/10 text-[#ff9f0a] border-[#ff9f0a]/20',
+      provides_api_for: 'bg-[#30d158]/10 text-[#30d158] border-[#30d158]/20',
+      shares_protocol: 'bg-[#bf5af2]/10 text-[#bf5af2] border-[#bf5af2]/20',
+    };
+    const cls = colors[type] || 'bg-[var(--muted)]/10 text-[var(--muted)] border-[var(--muted)]/20';
+    return (
+      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium border ${cls}`}>
+        {type.replace(/_/g, ' ')}
+      </span>
+    );
+  };
+
   return (
-    <div className="min-h-screen paper-texture p-4 md:p-8">
-      {/* Header */}
-      <header className="max-w-7xl mx-auto mb-6">
-        <div className="flex items-center justify-between bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4">
+    <div className="min-h-screen bg-[var(--background)] p-4 md:p-8">
+      {/* Header — glass nav */}
+      <header className="max-w-7xl mx-auto mb-6 sticky top-4 z-20">
+        <div className="glass-nav flex items-center justify-between rounded-2xl p-4">
           <div className="flex items-center gap-3">
             <Link
               href="/admin"
@@ -155,7 +170,7 @@ export default function RelationsPage() {
               <FaArrowLeft />
             </Link>
             <FaProjectDiagram className="text-xl text-[var(--accent-primary)]" />
-            <h1 className="text-xl font-bold text-[var(--foreground)]">
+            <h1 className="text-xl font-semibold tracking-tight text-[var(--foreground)]">
               Repository Relations
             </h1>
           </div>
@@ -163,16 +178,12 @@ export default function RelationsPage() {
             <button
               onClick={handleAnalyze}
               disabled={analyzing}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                analyzing
-                  ? 'bg-gray-300 dark:bg-gray-600 text-gray-500 dark:text-gray-400 cursor-not-allowed'
-                  : 'bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/90'
-              }`}
+              className="btn-apple flex items-center gap-2"
             >
               {analyzing ? (
                 <FaSpinner className="animate-spin" />
               ) : (
-                <FaSync />
+                <FaSync className="text-xs" />
               )}
               {analyzing ? 'Analyzing...' : 'Analyze Relations'}
             </button>
@@ -182,15 +193,15 @@ export default function RelationsPage() {
       </header>
 
       <main className="max-w-7xl mx-auto">
-        {/* Status banner */}
+        {/* Progress bar */}
         {analyzing && status && (
-          <div className="mb-4 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-            <div className="flex items-center gap-2">
-              <FaSpinner className="animate-spin text-blue-500" />
-              <span className="text-blue-700 dark:text-blue-300 text-sm">
-                {status.progress || 'Running analysis...'}
-              </span>
+          <div className="mb-6">
+            <div className="w-full bg-[var(--border-color)] rounded-full h-1.5 mb-2">
+              <div className="bg-[var(--accent-primary)] h-1.5 rounded-full animate-pulse" style={{ width: '60%' }} />
             </div>
+            <p className="text-xs text-[var(--muted)]">
+              {status.progress || 'Running analysis...'}
+            </p>
           </div>
         )}
 
@@ -199,98 +210,80 @@ export default function RelationsPage() {
             <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-[var(--accent-primary)]"></div>
           </div>
         ) : !data || !data.analyzed_at ? (
-          <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-12 text-center">
-            <FaProjectDiagram className="text-4xl text-[var(--muted)] mx-auto mb-4" />
-            <h2 className="text-lg font-medium text-[var(--foreground)] mb-2">
+          /* Empty state */
+          <div className="glass-card p-16 text-center">
+            <FaProjectDiagram className="text-5xl text-[var(--muted)] mx-auto mb-4" />
+            <h2 className="text-xl font-semibold tracking-tight text-[var(--foreground)] mb-2">
               No Relations Data
             </h2>
-            <p className="text-[var(--muted)] text-sm mb-6">
+            <p className="text-[var(--muted)] text-sm mb-8 max-w-md mx-auto">
               Click &quot;Analyze Relations&quot; to scan indexed repositories and discover relationships.
             </p>
+            <button onClick={handleAnalyze} disabled={analyzing} className="btn-apple">
+              Start Analysis
+            </button>
           </div>
         ) : (
           <>
-            {/* Stats */}
+            {/* Stats cards — Apple big number style */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-              <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4">
-                <p className="text-xs text-[var(--muted)] uppercase tracking-wide">Repositories</p>
-                <p className="text-2xl font-bold text-[var(--foreground)]">
+              <div className="glass-card p-5">
+                <p className="text-xs text-[var(--muted)] uppercase tracking-wider font-medium">Repositories</p>
+                <p className="text-4xl font-light tracking-tight text-[var(--foreground)] mt-1">
                   {Object.keys(data.repos).length}
                 </p>
               </div>
-              <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4">
-                <p className="text-xs text-[var(--muted)] uppercase tracking-wide">Relationships</p>
-                <p className="text-2xl font-bold text-[var(--foreground)]">
+              <div className="glass-card p-5">
+                <p className="text-xs text-[var(--muted)] uppercase tracking-wider font-medium">Relationships</p>
+                <p className="text-4xl font-light tracking-tight text-[var(--foreground)] mt-1">
                   {data.edges.length}
                 </p>
               </div>
-              <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4">
-                <p className="text-xs text-[var(--muted)] uppercase tracking-wide">Last Analyzed</p>
-                <p className="text-sm text-[var(--foreground)]">
+              <div className="glass-card p-5">
+                <p className="text-xs text-[var(--muted)] uppercase tracking-wider font-medium">Last Analyzed</p>
+                <p className="text-sm text-[var(--foreground)] mt-2">
                   {new Date(data.analyzed_at).toLocaleString()}
                 </p>
               </div>
             </div>
 
-            {/* Mermaid diagram */}
-            <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-6 mb-6">
-              <h2 className="text-lg font-bold text-[var(--foreground)] mb-4">
+            {/* Interactive Relation Graph */}
+            <div className="glass-card p-6 mb-6">
+              <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)] mb-4">
                 Dependency Graph
               </h2>
-              {data.mermaid ? (
-                <Mermaid chart={data.mermaid} />
-              ) : (
-                <p className="text-[var(--muted)] text-sm">No graph data available.</p>
-              )}
+              <RelationGraph data={data} />
             </div>
 
-            {/* Edge list */}
-            <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-6">
-              <h2 className="text-lg font-bold text-[var(--foreground)] mb-4">
+            {/* Edge list — card style */}
+            <div className="glass-card p-6">
+              <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)] mb-4">
                 Relationships ({data.edges.length})
               </h2>
               {data.edges.length === 0 ? (
                 <p className="text-[var(--muted)] text-sm">No relationships discovered.</p>
               ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-[var(--border-color)]">
-                        <th className="text-left py-2 px-3 text-[var(--muted)] font-medium">From</th>
-                        <th className="text-left py-2 px-3 text-[var(--muted)] font-medium">Type</th>
-                        <th className="text-left py-2 px-3 text-[var(--muted)] font-medium">To</th>
-                        <th className="text-left py-2 px-3 text-[var(--muted)] font-medium">Description</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.edges.map((edge, i) => (
-                        <tr key={i} className="border-b border-[var(--border-color)]/50 hover:bg-[var(--background)]/50">
-                          <td className="py-2 px-3 text-[var(--foreground)]">
-                            {edge.from.split('/').pop()}
-                          </td>
-                          <td className="py-2 px-3">
-                            <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
-                              edge.type === 'depends_on'
-                                ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                                : edge.type === 'provides_api_for'
-                                ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                                : edge.type === 'shares_protocol'
-                                ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                                : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
-                            }`}>
-                              {edge.type.replace(/_/g, ' ')}
-                            </span>
-                          </td>
-                          <td className="py-2 px-3 text-[var(--foreground)]">
-                            {edge.to.split('/').pop()}
-                          </td>
-                          <td className="py-2 px-3 text-[var(--muted)] text-xs">
-                            {edge.description}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="space-y-2">
+                  {data.edges.map((edge, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-4 p-3 rounded-xl bg-[var(--background)]/50 hover:bg-[var(--accent-primary)]/5 transition-colors"
+                    >
+                      <span className="text-sm font-medium text-[var(--foreground)] min-w-[100px] truncate">
+                        {edge.from.split('/').pop()}
+                      </span>
+                      <span className="shrink-0">{edgeTypeBadge(edge.type)}</span>
+                      <svg className="w-4 h-4 text-[var(--muted)] shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                      </svg>
+                      <span className="text-sm font-medium text-[var(--foreground)] min-w-[100px] truncate">
+                        {edge.to.split('/').pop()}
+                      </span>
+                      <span className="text-xs text-[var(--muted)] flex-1 truncate ml-2">
+                        {edge.description}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>

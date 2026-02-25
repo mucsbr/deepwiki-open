@@ -141,7 +141,7 @@ export default function ProcessedProjects({
       {showHeader && (
         <header className="mb-6">
           <div className="flex items-center justify-between">
-            <h1 className="text-3xl font-bold text-[var(--accent-primary)]">{t('title')}</h1>
+            <h1 className="text-3xl font-semibold tracking-tight text-[var(--accent-primary)]">{t('title')}</h1>
             <Link href="/" className="text-[var(--accent-primary)] hover:underline">
               {t('backToHome')}
             </Link>
@@ -158,7 +158,7 @@ export default function ProcessedProjects({
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={t('searchPlaceholder')}
-            className="input-japanese block w-full pl-4 pr-12 py-2.5 border border-[var(--border-color)] rounded-lg bg-[var(--background)] text-[var(--foreground)] placeholder:text-[var(--muted)] focus:outline-none focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]"
+            className="input-apple block w-full pl-4 pr-12 py-2.5 !rounded-xl"
           />
           {searchQuery && (
             <button
@@ -204,7 +204,7 @@ export default function ProcessedProjects({
         <div className={viewMode === 'card' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4' : 'space-y-2'}>
             {filteredProjects.map((project) => (
             viewMode === 'card' ? (
-              <div key={project.id} className="relative p-4 border border-[var(--border-color)] rounded-lg bg-[var(--card-bg)] shadow-sm hover:shadow-md transition-all duration-200 hover:scale-[1.02]">
+              <div key={project.id} className="relative glass-card p-4 hover:scale-[1.02]">
                 <button
                   type="button"
                   onClick={() => handleDelete(project)}
@@ -234,7 +234,7 @@ export default function ProcessedProjects({
                 </Link>
               </div>
             ) : (
-              <div key={project.id} className="relative p-3 border border-[var(--border-color)] rounded-lg bg-[var(--card-bg)] hover:bg-[var(--background)] transition-colors">
+              <div key={project.id} className="relative glass-card p-3 hover:bg-[var(--background)] transition-colors">
                 <button
                   type="button"
                   onClick={() => handleDelete(project)}

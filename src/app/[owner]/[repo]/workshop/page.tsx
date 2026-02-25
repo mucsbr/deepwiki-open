@@ -576,7 +576,7 @@ Estimated time: 20-30 minutes | Combines concepts from all exercises
   return (
     <div className="min-h-screen flex flex-col bg-[var(--background)]">
       {/* Header */}
-      <header className="sticky top-0 z-10 bg-[var(--card-bg)] border-b border-[var(--border-color)] shadow-sm">
+      <header className="sticky top-0 z-10 glass-nav">
         <div className="container mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center space-x-4">
             <Link
@@ -586,7 +586,7 @@ Estimated time: 20-30 minutes | Combines concepts from all exercises
               <FaArrowLeft className="mr-2" />
               <span>{messages.workshop?.backToWiki || 'Back to Wiki'}</span>
             </Link>
-            <h1 className="text-xl font-bold text-[var(--accent-primary)]">
+            <h1 className="text-xl font-semibold tracking-tight text-[var(--accent-primary)]">
               {messages.workshop?.title || 'Workshop'}: {repo}
             </h1>
           </div>
@@ -625,7 +625,7 @@ Estimated time: 20-30 minutes | Combines concepts from all exercises
             <p className="text-red-700 dark:text-red-300">{error}</p>
           </div>
         ) : (
-          <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-lg shadow-sm p-6">
+          <div className="glass-card p-6">
             {exportError && (
               <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-3 mb-4">
                 <p className="text-red-700 dark:text-red-300 text-sm">{exportError}</p>

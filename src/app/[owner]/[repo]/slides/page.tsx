@@ -1186,7 +1186,7 @@ Please return ONLY the HTML with no markdown formatting or code blocks. Just the
     <div className={`min-h-screen flex flex-col ${isFullscreen ? 'fixed inset-0 z-50 bg-[#0d1117]' : 'bg-[var(--background)]'}`}>
       {/* Header - Hide in fullscreen mode */}
       {!isFullscreen && (
-        <header className="sticky top-0 z-10 bg-[var(--card-bg)] border-b border-[var(--border-color)] shadow-sm">
+        <header className="sticky top-0 z-10 glass-nav">
           <div className="container mx-auto px-4 py-3 flex items-center justify-between">
             <div className="flex items-center space-x-4">
               <Link
@@ -1196,7 +1196,7 @@ Please return ONLY the HTML with no markdown formatting or code blocks. Just the
                 <FaArrowLeft className="mr-2" />
                 <span>{messages.slides?.backToWiki || 'Back to Wiki'}</span>
               </Link>
-              <h1 className="text-xl font-bold text-[var(--accent-primary)]">
+              <h1 className="text-xl font-semibold tracking-tight text-[var(--accent-primary)]">
                 {messages.slides?.title || 'Slides'}: {repo}
               </h1>
             </div>
@@ -1245,7 +1245,7 @@ Please return ONLY the HTML with no markdown formatting or code blocks. Just the
         ) : slides.length > 0 ? (
           <div className="flex flex-col flex-grow">
             {/* Slide content */}
-            <div className={`flex-grow flex flex-col items-center justify-center ${isFullscreen ? 'p-0 bg-[#0d1117]' : 'bg-[var(--card-bg)] border border-[var(--border-color)] rounded-lg shadow-sm p-6 mb-4'}`}>
+            <div className={`flex-grow flex flex-col items-center justify-center ${isFullscreen ? 'p-0 bg-[#0d1117]' : 'glass-card p-6 mb-4'}`}>
               {exportError && (
                 <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md p-3 mb-4 w-full">
                   <p className="text-red-700 dark:text-red-300 text-sm">{exportError}</p>

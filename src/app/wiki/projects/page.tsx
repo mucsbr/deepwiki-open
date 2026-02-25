@@ -8,7 +8,7 @@ export default function WikiProjectsPage() {
   const { messages } = useLanguage();
 
   return (
-    <div className="container mx-auto p-4">
+    <div className="min-h-screen bg-[var(--background)] container mx-auto p-4 md:p-8">
       <ProcessedProjects
         showHeader={true}
         messages={messages}

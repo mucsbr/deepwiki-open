@@ -10,7 +10,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 ENV SHARP_DIST_BASE_URL=https://npmmirror.com/mirrors/sharp-libvips/
 RUN npm config set registry https://registry.npmmirror.com && \
-    npm ci --legacy-peer-deps
+    npm install --legacy-peer-deps
 
 FROM node_base AS node_builder
 WORKDIR /app

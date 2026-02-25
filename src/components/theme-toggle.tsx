@@ -8,15 +8,14 @@ export default function ThemeToggle() {
   return (
     <button
       type="button"
-      className="theme-toggle-button cursor-pointer bg-transparent border border-[var(--border-color)] text-[var(--foreground)] hover:border-[var(--accent-primary)] active:bg-[var(--accent-secondary)]/10 rounded-md p-2 transition-all duration-300"
+      className="cursor-pointer glass-card !rounded-full p-2.5 hover:scale-105 active:scale-95 transition-all duration-200"
       title="Toggle theme"
       aria-label="Toggle theme"
       onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
     >
-      {/* Japanese-inspired sun and moon icons */}
       <div className="relative w-5 h-5">
         {/* Sun icon (light mode) */}
-        <div className={`absolute inset-0 transition-opacity duration-300 ${theme === 'dark' ? 'opacity-0' : 'opacity-100'}`}>
+        <div className={`absolute inset-0 transition-all duration-300 ${theme === 'dark' ? 'opacity-0 rotate-90 scale-0' : 'opacity-100 rotate-0 scale-100'}`}>
           <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-label="Light Mode">
             <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="2" />
             <path d="M12 2V4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
@@ -31,7 +30,7 @@ export default function ThemeToggle() {
         </div>
 
         {/* Moon icon (dark mode) */}
-        <div className={`absolute inset-0 transition-opacity duration-300 ${theme === 'dark' ? 'opacity-100' : 'opacity-0'}`}>
+        <div className={`absolute inset-0 transition-all duration-300 ${theme === 'dark' ? 'opacity-100 rotate-0 scale-100' : 'opacity-0 -rotate-90 scale-0'}`}>
           <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5" aria-label="Dark Mode">
             <path
               d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"

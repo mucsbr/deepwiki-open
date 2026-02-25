@@ -1,20 +1,20 @@
 import type { Metadata } from "next";
-import { Noto_Sans_JP, Noto_Serif_JP, Geist_Mono } from "next/font/google";
+import { Inter, Noto_Sans_JP, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "next-themes";
 import { LanguageProvider } from "@/contexts/LanguageContext";
 import { AuthProvider } from "@/contexts/AuthContext";
 
-// Japanese-friendly fonts
-const notoSansJP = Noto_Sans_JP({
-  variable: "--font-geist-sans",
+// Apple design system primary font
+const inter = Inter({
+  variable: "--font-sans",
   subsets: ["latin"],
-  weight: ["400", "500", "700"],
   display: "swap",
 });
 
-const notoSerifJP = Noto_Serif_JP({
-  variable: "--font-serif-jp",
+// CJK fallback
+const notoSansJP = Noto_Sans_JP({
+  variable: "--font-cjk",
   subsets: ["latin"],
   weight: ["400", "500", "700"],
   display: "swap",
@@ -38,7 +38,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body
-        className={`${notoSansJP.variable} ${notoSerifJP.variable} ${geistMono.variable} antialiased`}
+        className={`${inter.variable} ${notoSansJP.variable} ${geistMono.variable} antialiased`}
       >
         <ThemeProvider attribute="data-theme" defaultTheme="system" enableSystem>
           <AuthProvider>

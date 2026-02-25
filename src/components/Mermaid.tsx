@@ -165,7 +165,7 @@ mermaid.initialize({
       filter: brightness(0.95);
     }
   `,
-  fontFamily: 'var(--font-geist-sans), var(--font-serif-jp), sans-serif',
+  fontFamily: 'var(--font-sans), -apple-system, BlinkMacSystemFont, sans-serif',
   fontSize: 12,
 });
 
@@ -231,11 +231,11 @@ const FullScreenModal: React.FC<{
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-75 p-4">
       <div
         ref={modalRef}
-        className="bg-[var(--card-bg)] rounded-lg shadow-custom max-w-5xl max-h-[90vh] w-full overflow-hidden flex flex-col card-japanese"
+        className="glass-card max-w-5xl max-h-[90vh] w-full overflow-hidden flex flex-col"
       >
         {/* Modal header with controls */}
         <div className="flex items-center justify-between p-4 border-b border-[var(--border-color)]">
-          <div className="font-medium text-[var(--foreground)] font-serif">図表表示</div>
+          <div className="font-medium text-[var(--foreground)] tracking-tight">Diagram View</div>
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <button
@@ -424,7 +424,7 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled
           </div>
         </div>
         <div ref={mermaidRef} className="text-xs overflow-auto"></div>
-        <div className="mt-3 text-xs text-[var(--muted)] font-serif">
+        <div className="mt-3 text-xs text-[var(--muted)] tracking-tight">
           図表に構文エラーがあり、レンダリングできません。
         </div>
       </div>
@@ -438,7 +438,7 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled
           <div className="w-2 h-2 bg-[var(--accent-primary)]/70 rounded-full animate-pulse"></div>
           <div className="w-2 h-2 bg-[var(--accent-primary)]/70 rounded-full animate-pulse delay-75"></div>
           <div className="w-2 h-2 bg-[var(--accent-primary)]/70 rounded-full animate-pulse delay-150"></div>
-          <span className="text-[var(--muted)] text-xs ml-2 font-serif">図表を描画中...</span>
+          <span className="text-[var(--muted)] text-xs ml-2 tracking-tight">図表を描画中...</span>
         </div>
       </div>
     );

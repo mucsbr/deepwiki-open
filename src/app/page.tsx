@@ -144,18 +144,18 @@ export default function Home() {
   // Not authenticated — show login page
   if (!isAuthenticated) {
     return (
-      <div className="h-screen paper-texture p-4 md:p-8 flex flex-col">
+      <div className="h-screen bg-[var(--background)] p-4 md:p-8 flex flex-col">
         <div className="flex-1 flex items-center justify-center">
-          <div className="max-w-md w-full bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-8 text-center">
-            <div className="bg-[var(--accent-primary)] p-3 rounded-lg inline-block mb-4">
+          <div className="max-w-md w-full glass-card p-8 text-center">
+            <div className="bg-[var(--accent-primary)] p-3 rounded-2xl inline-block mb-4">
               <FaWikipediaW className="text-4xl text-white" />
             </div>
-            <h1 className="text-2xl font-bold text-[var(--accent-primary)] mb-2">DeepWiki</h1>
+            <h1 className="text-2xl font-semibold tracking-tight text-[var(--accent-primary)] mb-2">DeepWiki</h1>
             <p className="text-[var(--muted)] text-sm mb-8">Enterprise GitLab Wiki Generator</p>
 
             <button
               onClick={login}
-              className="w-full flex items-center justify-center gap-3 px-6 py-3 rounded-lg bg-[#FC6D26] hover:bg-[#E24329] text-white font-medium transition-colors"
+              className="btn-apple w-full flex items-center justify-center gap-3 px-6 py-3 !bg-[#FC6D26] hover:!bg-[#E24329]"
             >
               <FaGitlab className="text-xl" />
               Sign in with GitLab
@@ -171,16 +171,16 @@ export default function Home() {
 
   // Authenticated — show project list
   return (
-    <div className="h-screen paper-texture p-4 md:p-8 flex flex-col">
+    <div className="h-screen bg-[var(--background)] p-4 md:p-8 flex flex-col">
       <header className="max-w-6xl mx-auto mb-6 h-fit w-full">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 glass-nav rounded-2xl p-4">
           {/* Logo + title */}
           <div className="flex items-center">
-            <div className="bg-[var(--accent-primary)] p-2 rounded-lg mr-3">
+            <div className="bg-[var(--accent-primary)] p-2 rounded-xl mr-3">
               <FaWikipediaW className="text-2xl text-white" />
             </div>
             <div className="mr-6">
-              <h1 className="text-xl md:text-2xl font-bold text-[var(--accent-primary)]">{t('common.appName')}</h1>
+              <h1 className="text-xl md:text-2xl font-semibold tracking-tight text-[var(--accent-primary)]">{t('common.appName')}</h1>
               <p className="text-xs text-[var(--muted)] whitespace-nowrap">Enterprise GitLab Wiki</p>
             </div>
           </div>
@@ -194,7 +194,7 @@ export default function Home() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search repositories..."
-                className="input-japanese block w-full pl-10 pr-3 py-2.5 border-[var(--border-color)] rounded-lg bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                className="input-apple block w-full pl-10 pr-3 py-2.5 !rounded-xl"
               />
             </div>
           </div>
@@ -205,7 +205,7 @@ export default function Home() {
             <select
               value={language}
               onChange={(e) => setLanguage(e.target.value)}
-              className="text-xs px-2 py-1.5 rounded border border-[var(--border-color)] bg-transparent text-[var(--foreground)]"
+              className="text-xs px-2 py-1.5 rounded-lg border border-[var(--border-color)] bg-transparent text-[var(--foreground)]"
             >
               {Object.entries(supportedLanguages).map(([key, value]) => (
                 <option key={key} value={key}>{value}</option>
@@ -266,11 +266,11 @@ export default function Home() {
       </header>
 
       <main className="flex-1 max-w-6xl mx-auto w-full overflow-y-auto">
-        <div className="min-h-full bg-[var(--card-bg)] rounded-lg shadow-custom card-japanese p-6">
+        <div className="min-h-full glass-card p-6">
           {/* Section header */}
           <div className="flex items-center gap-3 mb-6">
             <FaBookOpen className="text-xl text-[var(--accent-primary)]" />
-            <h2 className="text-lg font-bold text-[var(--foreground)] font-serif">
+            <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)]">
               Repositories ({filteredProjects.length})
             </h2>
           </div>
@@ -292,7 +292,7 @@ export default function Home() {
               {groupedProjects.map(([groupPath, groupItems]) => {
                 const isExpanded = effectiveExpandedGroups.has(groupPath);
                 return (
-                  <div key={groupPath} className="border border-[var(--border-color)] rounded-lg overflow-hidden">
+                  <div key={groupPath} className="border border-[var(--border-color)] rounded-2xl overflow-hidden">
                     {/* Group header */}
                     <button
                       onClick={() => toggleGroup(groupPath)}
@@ -318,17 +318,17 @@ export default function Home() {
                             <button
                               key={project.id}
                               onClick={() => handleProjectClick(project)}
-                              className="text-left p-4 rounded-lg border border-[var(--border-color)] hover:border-[var(--accent-primary)]/50 bg-[var(--background)]/50 hover:bg-[var(--accent-primary)]/5 transition-all group"
+                              className="text-left p-4 rounded-2xl border border-[var(--border-color)] hover:border-[var(--accent-primary)]/50 bg-[var(--background)]/50 hover:bg-[var(--accent-primary)]/5 transition-all group"
                             >
                               <div className="flex items-start gap-3">
                                 {project.avatar_url ? (
                                   <img
                                     src={project.avatar_url}
                                     alt={project.name}
-                                    className="w-10 h-10 rounded-md border border-[var(--border-color)]"
+                                    className="w-10 h-10 rounded-xl border border-[var(--border-color)]"
                                   />
                                 ) : (
-                                  <div className="w-10 h-10 rounded-md bg-[var(--accent-primary)]/10 flex items-center justify-center">
+                                  <div className="w-10 h-10 rounded-xl bg-[var(--accent-primary)]/10 flex items-center justify-center">
                                     <FaGitlab className="text-[var(--accent-primary)]" />
                                   </div>
                                 )}
@@ -350,10 +350,10 @@ export default function Home() {
                                 <span>
                                   Indexed: {new Date(project.indexed_at).toLocaleDateString()}
                                 </span>
-                                <span className={`px-1.5 py-0.5 rounded text-xs ${
+                                <span className={`px-1.5 py-0.5 rounded-full text-xs ${
                                   project.index_status === 'indexed'
-                                    ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                                    : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                                    ? 'bg-[#30d158]/10 text-[#30d158]'
+                                    : 'bg-[#ff9f0a]/10 text-[#ff9f0a]'
                                 }`}>
                                   {project.index_status}
                                 </span>
@@ -372,8 +372,8 @@ export default function Home() {
       </main>
 
       <footer className="max-w-6xl mx-auto mt-8 flex flex-col gap-4 w-full">
-        <div className="flex flex-col sm:flex-row justify-between items-center gap-4 bg-[var(--card-bg)] rounded-lg p-4 border border-[var(--border-color)] shadow-custom">
-          <p className="text-[var(--muted)] text-sm font-serif">{t('footer.copyright')}</p>
+        <div className="flex flex-col sm:flex-row justify-between items-center gap-4 glass-card p-4">
+          <p className="text-[var(--muted)] text-sm">{t('footer.copyright')}</p>
           <div className="flex items-center gap-4">
             <Link
               href="/wiki/projects"

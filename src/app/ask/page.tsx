@@ -105,10 +105,10 @@ export default function GlobalAskPage() {
   const indexedProjects = projects.filter((p) => p.status === 'indexed');
 
   return (
-    <div className="min-h-screen paper-texture p-4 md:p-8">
+    <div className="min-h-screen bg-[var(--background)] p-4 md:p-8">
       {/* Header */}
       <header className="max-w-4xl mx-auto mb-6">
-        <div className="flex items-center justify-between bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4">
+        <div className="flex items-center justify-between glass-nav rounded-2xl p-4">
           <div className="flex items-center gap-3">
             <Link
               href="/"
@@ -116,11 +116,11 @@ export default function GlobalAskPage() {
             >
               <FaArrowLeft />
             </Link>
-            <div className="bg-[var(--accent-primary)] p-2 rounded-lg">
+            <div className="bg-[var(--accent-primary)] p-2 rounded-xl">
               <FaWikipediaW className="text-xl text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-[var(--accent-primary)] flex items-center gap-2">
+              <h1 className="text-xl font-semibold tracking-tight text-[var(--accent-primary)] flex items-center gap-2">
                 <FaComments className="text-lg" />
                 Global Ask
               </h1>
@@ -133,7 +133,7 @@ export default function GlobalAskPage() {
 
       <main className="max-w-4xl mx-auto space-y-4">
         {/* Repository selector */}
-        <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)] p-4">
+        <div className="glass-card p-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-medium text-[var(--foreground)]">
               Search Scope ({selectedRepos.size}/{indexedProjects.length} repos)
@@ -191,7 +191,7 @@ export default function GlobalAskPage() {
         </div>
 
         {/* Ask component */}
-        <div className="bg-[var(--card-bg)] rounded-lg shadow-custom border border-[var(--border-color)]">
+        <div className="glass-card overflow-hidden">
           <Ask
             repoInfo={globalRepoInfo}
             language={language}
