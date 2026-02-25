@@ -356,8 +356,19 @@ def _extract_llm_content(response) -> str:
     return str(response)
 
 
-async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "") -> str:
-    """Actual LLM call implementation."""
+async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "", _max_retries: int = 3) -> str:
+    """Actual LLM call implementation. Retries up to _max_retries times on empty result."""
+    for _attempt in range(1, _max_retries + 1):
+        result = await _call_llm_inner_once(provider, model, prompt, label)
+        if result:
+            return result
+        logger.warning("[_call_llm_inner] empty result on attempt %d/%d (label=%s), retrying...", _attempt, _max_retries, label)
+    logger.error("[_call_llm_inner] all %d attempts returned empty (label=%s)", _max_retries, label)
+    return ""
+
+
+async def _call_llm_inner_once(provider: str, model: str, prompt: str, label: str = "") -> str:
+    """Single LLM call attempt."""
     config = get_model_config(provider, model)
     model_kwargs_cfg = config["model_kwargs"]
 
