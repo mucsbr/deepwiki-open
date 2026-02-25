@@ -262,7 +262,11 @@ def _parse_sse_text(raw: str) -> str:
     """Parse raw SSE text (data: {...} lines) and extract the concatenated content.
 
     Handles the case where the API returns streaming SSE format even though
-    stream=False was requested.
+    stream=False was requested.  Supports multiple SSE payload variants:
+    - streaming: choices[].delta.content
+    - non-streaming: choices[].message.content
+    - simple: choices[].text
+    - top-level: content / text / output
     """
     import json as _json
     content_parts = []
@@ -275,11 +279,31 @@ def _parse_sse_text(raw: str) -> str:
             break
         try:
             obj = _json.loads(payload)
+            # Try choices-based formats
             for choice in obj.get("choices", []):
+                # Streaming: delta.content
                 delta = choice.get("delta", {})
                 text = delta.get("content")
                 if text:
                     content_parts.append(text)
+                    continue
+                # Non-streaming: message.content
+                message = choice.get("message", {})
+                text = message.get("content")
+                if text:
+                    content_parts.append(text)
+                    continue
+                # Legacy: text field directly on choice
+                text = choice.get("text")
+                if text:
+                    content_parts.append(text)
+            # Top-level content (some non-standard providers)
+            if not content_parts:
+                for key in ("content", "text", "output", "response"):
+                    val = obj.get(key)
+                    if val and isinstance(val, str):
+                        content_parts.append(val)
+                        break
         except _json.JSONDecodeError:
             continue
     return "".join(content_parts)
@@ -311,8 +335,8 @@ def _extract_llm_content(response) -> str:
         parsed = _parse_sse_text(response)
         if parsed:
             return parsed
-        logger.warning("[_extract_llm_content] SSE parsing yielded empty content, returning raw")
-        return response
+        logger.warning("[_extract_llm_content] SSE parsing yielded empty content; raw preview: %s", response[:200])
+        return ""
 
     # 3. Plain string
     if isinstance(response, str):
@@ -395,6 +419,19 @@ async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "
         input=prompt, model_kwargs=kwargs, model_type=ModelType.LLM,
     )
     response = await client.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+
+    # Some proxies ignore stream=False and return an AsyncStream.
+    # Consume it into text before passing to _extract_llm_content.
+    if hasattr(response, "__aiter__"):
+        logger.info("[_call_llm_inner] response is async iterable (stream), consuming chunks")
+        content_parts = []
+        async for chunk in response:
+            if hasattr(chunk, "choices") and chunk.choices:
+                delta = chunk.choices[0].delta
+                text = getattr(delta, "content", None)
+                if text:
+                    content_parts.append(text)
+        return "".join(content_parts)
 
     return _extract_llm_content(response)
 
