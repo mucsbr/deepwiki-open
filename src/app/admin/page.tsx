@@ -31,6 +31,7 @@ interface Stats {
   total_indexed_projects: number;
   status_counts: Record<string, number>;
   total_wiki_caches: number;
+  indexed_without_wiki: number;
   disk_usage: { repos_mb: number; databases_mb: number; wikicache_mb: number };
   last_batch_run: string | null;
 }
@@ -42,6 +43,8 @@ interface Project {
   indexed_at: string;
   last_activity_at: string;
   repo_path: string;
+  has_wiki_cache: boolean;
+  wiki_languages: string[];
 }
 
 interface BatchStatus {
@@ -393,7 +396,11 @@ export default function AdminPage() {
 
   const filteredProjects = useMemo(() => {
     let list = projects;
-    if (statusFilter !== 'all') {
+    if (statusFilter === 'no_wiki') {
+      list = list.filter((p) => p.status === 'indexed' && !p.has_wiki_cache);
+    } else if (statusFilter === 'has_wiki') {
+      list = list.filter((p) => p.has_wiki_cache);
+    } else if (statusFilter !== 'all') {
       list = list.filter((p) => p.status === statusFilter);
     }
     if (searchQuery.trim()) {
@@ -476,22 +483,32 @@ export default function AdminPage() {
         {/* ================================================================ */}
         {/* Area 1: Stats Cards */}
         {/* ================================================================ */}
-        <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <section className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           <StatCard
             icon={<FaDatabase className="text-blue-500" />}
             label="Indexed Projects"
             value={stats?.total_indexed_projects ?? 0}
+            onClick={() => { setStatusFilter('all'); setActiveTab('indexed'); }}
           />
           <StatCard
             icon={<FaExclamationTriangle className="text-red-500" />}
             label="Index Errors"
             value={stats?.status_counts?.error ?? 0}
             highlight={!!stats?.status_counts?.error}
+            onClick={() => { setStatusFilter('error'); setActiveTab('indexed'); }}
           />
           <StatCard
             icon={<FaCheckCircle className="text-green-500" />}
             label="Wiki Caches"
             value={stats?.total_wiki_caches ?? 0}
+            onClick={() => { setStatusFilter('has_wiki'); setActiveTab('indexed'); }}
+          />
+          <StatCard
+            icon={<FaExclamationTriangle className="text-orange-500" />}
+            label="Missing Wiki"
+            value={stats?.indexed_without_wiki ?? 0}
+            highlight={!!stats?.indexed_without_wiki}
+            onClick={() => { setStatusFilter('no_wiki'); setActiveTab('indexed'); }}
           />
           <StatCard
             icon={<FaServer className="text-purple-500" />}
@@ -581,6 +598,9 @@ export default function AdminPage() {
                         {availableStatuses.map((s) => (
                           <option key={s} value={s}>{s}</option>
                         ))}
+                        <option disabled>──────────</option>
+                        <option value="no_wiki">Missing Wiki</option>
+                        <option value="has_wiki">Has Wiki</option>
                       </select>
                     </div>
                   </div>
@@ -592,6 +612,7 @@ export default function AdminPage() {
                       <tr className="border-b border-[var(--border-color)] text-left text-[var(--muted)]">
                         <th className="pb-2 pr-4">Project Path</th>
                         <th className="pb-2 pr-4">Status</th>
+                        <th className="pb-2 pr-4">Wiki</th>
                         <th className="pb-2 pr-4">Indexed At</th>
                         <th className="pb-2 pr-4">Last Activity</th>
                         <th className="pb-2 text-right">Actions</th>
@@ -600,7 +621,7 @@ export default function AdminPage() {
                     <tbody>
                       {filteredProjects.length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="py-8 text-center text-[var(--muted)]">
+                          <td colSpan={6} className="py-8 text-center text-[var(--muted)]">
                             No projects found.
                           </td>
                         </tr>
@@ -628,6 +649,19 @@ export default function AdminPage() {
                                 </div>
                               </td>
                               <td className="py-2 pr-4"><StatusBadge status={p.status} /></td>
+                              <td className="py-2 pr-4">
+                                {p.has_wiki_cache ? (
+                                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                                    {p.wiki_languages.join(', ')}
+                                  </span>
+                                ) : p.status === 'indexed' ? (
+                                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
+                                    missing
+                                  </span>
+                                ) : (
+                                  <span className="text-[var(--muted)]">&mdash;</span>
+                                )}
+                              </td>
                               <td className="py-2 pr-4 text-[var(--muted)]">
                                 {p.indexed_at ? new Date(p.indexed_at).toLocaleString() : '-'}
                               </td>
@@ -948,14 +982,19 @@ function StatCard({
   label,
   value,
   highlight,
+  onClick,
 }: {
   icon: React.ReactNode;
   label: string;
   value: number | string;
   highlight?: boolean;
+  onClick?: () => void;
 }) {
   return (
-    <div className="glass-card p-5">
+    <div
+      className={`glass-card p-5 ${onClick ? 'cursor-pointer hover:ring-1 hover:ring-[var(--accent-primary)]/30 transition-shadow' : ''}`}
+      onClick={onClick}
+    >
       <div className="flex items-center gap-3">
         <div className="text-2xl">{icon}</div>
         <div>

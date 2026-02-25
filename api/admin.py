@@ -87,6 +87,29 @@ def _dir_size_mb(path: str) -> float:
     return round(total / (1024 * 1024), 2)
 
 
+def _build_wiki_cache_lookup() -> dict[str, dict]:
+    """Scan wiki cache directory and build lookup by owner/repo path."""
+    adalflow_root = os.path.expanduser(os.path.join("~", ".adalflow"))
+    wikicache_dir = os.path.join(adalflow_root, "wikicache")
+    lookup: dict[str, dict] = {}
+    if not os.path.isdir(wikicache_dir):
+        return lookup
+    for filename in os.listdir(wikicache_dir):
+        if not (filename.startswith("deepwiki_cache_") and filename.endswith(".json")):
+            continue
+        parts = filename.replace("deepwiki_cache_", "").replace(".json", "").split("_")
+        if len(parts) >= 4:
+            owner = parts[1].replace("--", "/")
+            language = parts[-1]
+            repo = "_".join(parts[2:-1])
+            path = f"{owner}/{repo}"
+            if path not in lookup:
+                lookup[path] = {"has_cache": True, "languages": []}
+            if language not in lookup[path]["languages"]:
+                lookup[path]["languages"].append(language)
+    return lookup
+
+
 def _get_configured_group_ids() -> List[int]:
     """Parse GITLAB_BATCH_GROUPS into a list of integer group IDs."""
     if not GITLAB_BATCH_GROUPS:
@@ -105,10 +128,15 @@ async def get_stats(_admin: dict = Depends(require_admin)):
     adalflow_root = os.path.expanduser(os.path.join("~", ".adalflow"))
 
     projects = get_all_indexed_projects()
+    wiki_lookup = _build_wiki_cache_lookup()
+
     status_counts: dict[str, int] = {}
-    for meta in projects.values():
+    indexed_without_wiki = 0
+    for path, meta in projects.items():
         s = meta.get("status", "unknown")
         status_counts[s] = status_counts.get(s, 0) + 1
+        if s == "indexed" and path not in wiki_lookup:
+            indexed_without_wiki += 1
 
     # Count wiki cache files
     wikicache_dir = os.path.join(adalflow_root, "wikicache")
@@ -129,6 +157,7 @@ async def get_stats(_admin: dict = Depends(require_admin)):
         "total_indexed_projects": len(projects),
         "status_counts": status_counts,
         "total_wiki_caches": wiki_cache_count,
+        "indexed_without_wiki": indexed_without_wiki,
         "disk_usage": disk_usage,
         "last_batch_run": _batch_status.get("last_run"),
     }
@@ -138,8 +167,10 @@ async def get_stats(_admin: dict = Depends(require_admin)):
 async def get_projects(_admin: dict = Depends(require_admin)):
     """Return all indexed projects with metadata."""
     projects = get_all_indexed_projects()
+    wiki_lookup = _build_wiki_cache_lookup()
     result = []
     for path, meta in projects.items():
+        wiki_info = wiki_lookup.get(path, {})
         result.append(
             {
                 "path": path,
@@ -148,6 +179,8 @@ async def get_projects(_admin: dict = Depends(require_admin)):
                 "indexed_at": meta.get("indexed_at", ""),
                 "last_activity_at": meta.get("last_activity_at", ""),
                 "repo_path": meta.get("repo_path", ""),
+                "has_wiki_cache": wiki_info.get("has_cache", False),
+                "wiki_languages": wiki_info.get("languages", []),
             }
         )
     # Sort by indexed_at descending
