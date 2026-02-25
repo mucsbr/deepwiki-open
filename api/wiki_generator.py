@@ -32,6 +32,18 @@ from api.logging_config import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# Dedicated logger for full LLM responses — writes to a separate file
+_llm_resp_logger = logging.getLogger("llm_response")
+_llm_resp_logger.setLevel(logging.DEBUG)
+_llm_resp_logger.propagate = False
+if not _llm_resp_logger.handlers:
+    from adalflow.utils import get_adalflow_default_root_path as _get_root
+    _llm_log_dir = os.path.join(_get_root(), "logs")
+    os.makedirs(_llm_log_dir, exist_ok=True)
+    _fh = logging.FileHandler(os.path.join(_llm_log_dir, "llm_responses.log"), encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    _llm_resp_logger.addHandler(_fh)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -420,6 +432,13 @@ async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "
     )
     response = await client.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
 
+    # Log raw response type and repr to dedicated file
+    _llm_resp_logger.debug(
+        "[%s] provider=%s model=%s | raw response type=%s repr_preview=%.2000s",
+        label, provider, model_kwargs_cfg.get("model", "?"),
+        type(response).__name__, repr(response)[:2000],
+    )
+
     # Some proxies ignore stream=False and return an AsyncStream.
     # Consume it into text before passing to _extract_llm_content.
     if hasattr(response, "__aiter__"):
@@ -431,9 +450,13 @@ async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "
                 text = getattr(delta, "content", None)
                 if text:
                     content_parts.append(text)
-        return "".join(content_parts)
+        result = "".join(content_parts)
+        _llm_resp_logger.info("[%s] stream consumed, result (%d chars): %.2000s", label, len(result), result[:2000])
+        return result
 
-    return _extract_llm_content(response)
+    result = _extract_llm_content(response)
+    _llm_resp_logger.info("[%s] extracted result (%d chars): %.2000s", label, len(result), result[:2000])
+    return result
 
 
 # ---------------------------------------------------------------------------
