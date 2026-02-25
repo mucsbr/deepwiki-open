@@ -234,8 +234,11 @@ export default function RelationGraph({ data }: RelationGraphProps) {
 
   const selectedRepo = selectedNode ? data.repos[selectedNode] : null;
 
+  // Compute dynamic height: more nodes → taller canvas
+  const graphHeight = Math.max(600, Math.min(1200, Object.keys(data.repos).length * 4));
+
   return (
-    <div className="relative w-full" style={{ minHeight: 500 }}>
+    <div className="relative w-full" style={{ height: graphHeight }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -246,8 +249,8 @@ export default function RelationGraph({ data }: RelationGraphProps) {
         onNodeClick={onNodeClick}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.2 }}
-        minZoom={0.3}
+        fitViewOptions={{ padding: 0.1, maxZoom: 1 }}
+        minZoom={0.05}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
       >
