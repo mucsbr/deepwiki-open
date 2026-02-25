@@ -22,6 +22,39 @@ from api.metadata_store import get_all_indexed_projects
 
 logger = logging.getLogger(__name__)
 
+
+def _extract_json_array(text: str) -> Optional[list]:
+    """Extract a JSON array from LLM response text.
+
+    Handles: pure JSON, markdown fenced JSON, or JSON embedded in prose.
+    """
+    text = text.strip()
+    # 1. Try direct parse
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, list) else None
+    except json.JSONDecodeError:
+        pass
+    # 2. Try extracting from markdown code fence
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(1).strip())
+            return obj if isinstance(obj, list) else None
+        except json.JSONDecodeError:
+            pass
+    # 3. Find first '[' and last ']' — extract the array
+    start = text.find("[")
+    end = text.rfind("]")
+    if start != -1 and end > start:
+        try:
+            obj = json.loads(text[start:end + 1])
+            return obj if isinstance(obj, list) else None
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
 RELATIONS_FILE = os.path.join(
     get_adalflow_default_root_path(), "metadata", "repo_relations.json"
 )
@@ -488,15 +521,10 @@ Respond ONLY with the JSON array, no other text."""
                 label="import_relation_analysis",
             )
 
-            # Parse JSON from response
-            text = text.strip()
-            if text.startswith("```"):
-                text = re.sub(r"^```\w*\n?", "", text)
-                text = re.sub(r"\n?```$", "", text)
-            text = text.strip()
-
-            relations = json.loads(text)
-            if not isinstance(relations, list):
+            # Parse JSON array from response (handles prose + fenced JSON)
+            relations = _extract_json_array(text)
+            if relations is None:
+                logger.warning("LLM import analysis (batch %d): no JSON array found in response (%d chars), preview: %s", batch_start, len(text), text[:300])
                 continue
 
             valid_paths = {info["path"] for info in repos_info_list}
@@ -646,16 +674,10 @@ Respond ONLY with the JSON array, no other text."""
             label="semantic_relation_analysis",
         )
 
-        # Parse JSON from response
-        # Strip markdown code fences if present
-        text = text.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```\w*\n?", "", text)
-            text = re.sub(r"\n?```$", "", text)
-        text = text.strip()
-
-        relations = json.loads(text)
-        if not isinstance(relations, list):
+        # Parse JSON array from response (handles prose + fenced JSON)
+        relations = _extract_json_array(text)
+        if relations is None:
+            logger.warning("LLM semantic analysis: no JSON array found in response (%d chars), preview: %s", len(text), text[:300])
             return []
 
         # Validate each relation

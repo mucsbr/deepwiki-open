@@ -253,13 +253,11 @@ async def _call_llm(provider: str, model: str, prompt: str, label: str = "") -> 
 
     try:
         result = await _call_llm_inner(provider, model, prompt, label)
-        # Strip <think>...</think> blocks (e.g. from thinking models like grok-thinking, deepseek-r1)
-        stripped = re.sub(r"<think>[\s\S]*?</think>", "", result).strip()
         logger.info(
-            "[_call_llm] OK %s | raw_chars=%d stripped_chars=%d | first_200=%s",
-            label or "unnamed", len(result), len(stripped), repr(stripped),
+            "[_call_llm] OK %s | chars=%d | first_200=%s",
+            label or "unnamed", len(result), repr(result[:200]),
         )
-        return stripped
+        return result
     except Exception as exc:
         logger.error(
             "[_call_llm] FAILED %s | provider=%s model=%s | "
@@ -451,11 +449,16 @@ async def _call_llm_inner(provider: str, model: str, prompt: str, label: str = "
                 if text:
                     content_parts.append(text)
         result = "".join(content_parts)
-        _llm_resp_logger.info("[%s] stream consumed, result (%d chars): %.2000s", label, len(result), result[:2000])
-        return result
+    else:
+        result = _extract_llm_content(response)
 
-    result = _extract_llm_content(response)
-    _llm_resp_logger.info("[%s] extracted result (%d chars): %.2000s", label, len(result), result[:2000])
+    # Strip <think>...</think> blocks from thinking models (grok-thinking, deepseek-r1, etc.)
+    raw_len = len(result)
+    result = re.sub(r"<think>[\s\S]*?</think>", "", result).strip()
+    if len(result) != raw_len:
+        logger.info("[_call_llm_inner] stripped <think> blocks: %d -> %d chars", raw_len, len(result))
+
+    _llm_resp_logger.info("[%s] final result (%d chars): %.2000s", label, len(result), result[:2000])
     return result
 
 
