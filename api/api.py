@@ -1,3 +1,4 @@
+import contextlib
 import os
 import logging
 from urllib.parse import quote
@@ -19,11 +20,24 @@ from api.logging_config import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# Import MCP server
+from api.mcp_server import mcp as mcp_server
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app):
+    """Application lifespan: manages MCP session lifecycle."""
+    async with mcp_server.session_manager.run():
+        logger.info("MCP server session manager started")
+        yield
+    logger.info("MCP server session manager stopped")
+
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Streaming API",
-    description="API for streaming chat completions"
+    description="API for streaming chat completions",
+    lifespan=lifespan,
 )
 
 # Configure CORS
@@ -160,6 +174,9 @@ app.include_router(gitlab_auth_router)
 
 # Register Admin routes
 app.include_router(admin_router)
+
+# Mount MCP Server (Streamable HTTP)
+app.mount("/mcp", mcp_server.streamable_http_app())
 
 @app.get("/lang/config")
 async def get_lang_config():

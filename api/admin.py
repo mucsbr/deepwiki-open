@@ -26,6 +26,13 @@ from api.config import (
 )
 from api.gitlab_auth import get_current_user
 from api.metadata_store import get_all_indexed_projects, get_project_metadata
+from api.product_manager import (
+    list_products as pm_list_products,
+    get_product as pm_get_product,
+    create_product as pm_create_product,
+    update_product as pm_update_product,
+    delete_product as pm_delete_product,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +60,19 @@ class BatchIndexRequest(BaseModel):
     group_ids: Optional[List[int]] = None
     project_ids: Optional[List[int]] = None
     force: bool = False
+
+
+class ProductCreateRequest(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    repos: List[str] = []
+
+
+class ProductUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    repos: Optional[List[str]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +708,7 @@ async def get_batch_index_status(_admin: dict = Depends(require_admin)):
 
 
 class RelationsAnalyzeRequest(BaseModel):
-    provider: Optional[str] = "google"
+    provider: Optional[str] = None
     model: Optional[str] = None
 
 
@@ -714,7 +734,9 @@ async def trigger_relation_analysis(
     if status["running"]:
         raise HTTPException(status_code=409, detail="Analysis already running")
 
-    provider = body.provider if body else "google"
+    from api.config import configs
+    default_provider = configs.get("default_provider", "openai")
+    provider = (body.provider if body and body.provider else default_provider)
     model = body.model if body else None
 
     async def _run():
@@ -733,3 +755,150 @@ async def get_relation_analysis_status(_admin: dict = Depends(require_admin)):
     from api.repo_relations import get_analysis_status
 
     return get_analysis_status()
+
+
+# ---------------------------------------------------------------------------
+# Product management endpoints
+# ---------------------------------------------------------------------------
+
+
+@admin_router.get("/products")
+async def list_products_endpoint(_admin: dict = Depends(require_admin)):
+    """Return all defined products."""
+    return pm_list_products()
+
+
+@admin_router.post("/products")
+async def create_product_endpoint(
+    body: ProductCreateRequest,
+    _admin: dict = Depends(require_admin),
+):
+    """Create a new product."""
+    try:
+        return pm_create_product(
+            product_id=body.id,
+            name=body.name,
+            description=body.description,
+            repos=body.repos,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@admin_router.put("/products/{product_id}")
+async def update_product_endpoint(
+    product_id: str,
+    body: ProductUpdateRequest,
+    _admin: dict = Depends(require_admin),
+):
+    """Update an existing product."""
+    try:
+        return pm_update_product(
+            product_id=product_id,
+            name=body.name,
+            description=body.description,
+            repos=body.repos,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@admin_router.delete("/products/{product_id}")
+async def delete_product_endpoint(
+    product_id: str,
+    _admin: dict = Depends(require_admin),
+):
+    """Delete a product."""
+    try:
+        pm_delete_product(product_id)
+        return {"message": f"Product '{product_id}' deleted"}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Insight extraction endpoints
+# ---------------------------------------------------------------------------
+
+# Module-level status for insight extraction
+_insight_status: dict = {
+    "running": False,
+    "progress": "",
+    "error": None,
+}
+
+
+@admin_router.post("/projects/{project_path:path}/extract-insights")
+async def extract_single_project_insights(
+    project_path: str,
+    _admin: dict = Depends(require_admin),
+):
+    """Extract structured insights for a single project."""
+    if _insight_status["running"]:
+        raise HTTPException(status_code=409, detail="Insight extraction already running")
+
+    async def _run():
+        _insight_status["running"] = True
+        _insight_status["progress"] = f"Extracting insights for {project_path}..."
+        _insight_status["error"] = None
+        try:
+            from api.insight_extractor import extract_project_insights
+            await extract_project_insights(project_path)
+            _insight_status["progress"] = f"Done: {project_path}"
+        except Exception as exc:
+            logger.error("Insight extraction failed for %s: %s", project_path, exc)
+            _insight_status["error"] = str(exc)
+        finally:
+            _insight_status["running"] = False
+
+    asyncio.create_task(_run())
+    return {"message": f"Insight extraction started for {project_path}"}
+
+
+@admin_router.post("/products/{product_id}/extract-insights")
+async def extract_product_insights(
+    product_id: str,
+    _admin: dict = Depends(require_admin),
+):
+    """Extract structured insights for all repos in a product."""
+    if _insight_status["running"]:
+        raise HTTPException(status_code=409, detail="Insight extraction already running")
+
+    product = pm_get_product(product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail=f"Product '{product_id}' not found")
+
+    repos = product.get("repos", [])
+    if not repos:
+        raise HTTPException(status_code=400, detail="Product has no repositories")
+
+    async def _run():
+        _insight_status["running"] = True
+        _insight_status["error"] = None
+        try:
+            from api.insight_extractor import extract_project_insights
+            for i, repo_path in enumerate(repos):
+                _insight_status["progress"] = (
+                    f"Extracting [{i + 1}/{len(repos)}]: {repo_path}"
+                )
+                try:
+                    await extract_project_insights(repo_path)
+                except Exception as exc:
+                    logger.error(
+                        "Insight extraction failed for %s: %s (continuing)", repo_path, exc
+                    )
+            _insight_status["progress"] = f"Done: {len(repos)} repos"
+        except Exception as exc:
+            logger.error("Product insight extraction failed: %s", exc)
+            _insight_status["error"] = str(exc)
+        finally:
+            _insight_status["running"] = False
+
+    asyncio.create_task(_run())
+    return {"message": f"Insight extraction started for product '{product_id}' ({len(repos)} repos)"}
+
+
+@admin_router.get("/insights/status")
+async def get_insight_extraction_status(_admin: dict = Depends(require_admin)):
+    """Return the current insight extraction status."""
+    return dict(_insight_status)

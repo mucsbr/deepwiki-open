@@ -19,6 +19,12 @@ import {
   FaRedo,
   FaBookOpen,
   FaProjectDiagram,
+  FaCubes,
+  FaPlus,
+  FaTrash,
+  FaEdit,
+  FaTimes,
+  FaBrain,
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
@@ -90,6 +96,15 @@ interface UpdateInfo {
   needs_update: boolean;
 }
 
+interface Product {
+  id: string;
+  name: string;
+  description: string;
+  repos: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -106,7 +121,13 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'indexed' | 'batch'>('indexed');
+  const [activeTab, setActiveTab] = useState<'indexed' | 'batch' | 'products'>('indexed');
+
+  // Product management states
+  const [products, setProducts] = useState<Product[]>([]);
+  const [showProductForm, setShowProductForm] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [productForm, setProductForm] = useState({ id: '', name: '', description: '', repos: '' });
 
   // Update detection
   const [updateInfo, setUpdateInfo] = useState<Record<string, UpdateInfo>>({});
@@ -147,12 +168,13 @@ export default function AdminPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const [statsRes, projectsRes, configRes, batchRes, groupsRes] = await Promise.all([
+      const [statsRes, projectsRes, configRes, batchRes, groupsRes, productsRes] = await Promise.all([
         fetch('/api/admin/stats', { headers }),
         fetch('/api/admin/projects', { headers }),
         fetch('/api/admin/config', { headers }),
         fetch('/api/admin/batch-index/status', { headers }),
         fetch('/api/admin/groups', { headers }),
+        fetch('/api/admin/products', { headers }),
       ]);
 
       if (statsRes.ok) setStats(await statsRes.json());
@@ -160,6 +182,7 @@ export default function AdminPage() {
       if (configRes.ok) setConfig(await configRes.json());
       if (batchRes.ok) setBatchStatus(await batchRes.json());
       if (groupsRes.ok) setGroups(await groupsRes.json());
+      if (productsRes.ok) setProducts(await productsRes.json());
     } catch (err) {
       console.error('Failed to fetch admin data:', err);
     } finally {
@@ -468,6 +491,86 @@ export default function AdminPage() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // Product CRUD handlers
+  // ---------------------------------------------------------------------------
+
+  const handleProductSave = useCallback(async () => {
+    const repos = productForm.repos
+      .split('\n')
+      .map((r) => r.trim())
+      .filter(Boolean);
+
+    try {
+      if (editingProduct) {
+        const res = await fetch(`/api/admin/products/${editingProduct.id}`, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ name: productForm.name, description: productForm.description, repos }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert(err.detail || 'Failed to update product');
+          return;
+        }
+      } else {
+        const res = await fetch('/api/admin/products', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ id: productForm.id, name: productForm.name, description: productForm.description, repos }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          alert(err.detail || 'Failed to create product');
+          return;
+        }
+      }
+      setShowProductForm(false);
+      setEditingProduct(null);
+      setProductForm({ id: '', name: '', description: '', repos: '' });
+      // Refresh products
+      const res = await fetch('/api/admin/products', { headers });
+      if (res.ok) setProducts(await res.json());
+    } catch (err) {
+      console.error('Product save error:', err);
+    }
+  }, [productForm, editingProduct, headers]);
+
+  const handleProductDelete = useCallback(async (productId: string) => {
+    if (!confirm(`Delete product "${productId}"?`)) return;
+    try {
+      const res = await fetch(`/api/admin/products/${productId}`, {
+        method: 'DELETE',
+        headers,
+      });
+      if (res.ok) {
+        setProducts((prev) => prev.filter((p) => p.id !== productId));
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to delete product');
+      }
+    } catch (err) {
+      console.error('Product delete error:', err);
+    }
+  }, [headers]);
+
+  const startEditProduct = useCallback((product: Product) => {
+    setEditingProduct(product);
+    setProductForm({
+      id: product.id,
+      name: product.name,
+      description: product.description,
+      repos: product.repos.join('\n'),
+    });
+    setShowProductForm(true);
+  }, []);
+
+  const startCreateProduct = useCallback(() => {
+    setEditingProduct(null);
+    setProductForm({ id: '', name: '', description: '', repos: '' });
+    setShowProductForm(true);
+  }, []);
+
   const availableStatuses = useMemo(() => {
     const s = new Set(projects.map((p) => p.status));
     return Array.from(s).sort();
@@ -609,6 +712,24 @@ export default function AdminPage() {
             >
               Batch Indexing
               {activeTab === 'batch' && (
+                <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-primary)]" />
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab('products')}
+              className={`px-6 py-3 text-sm font-medium transition-colors relative ${
+                activeTab === 'products'
+                  ? 'text-[var(--accent-primary)]'
+                  : 'text-[var(--muted)] hover:text-[var(--foreground)]'
+              }`}
+            >
+              Products
+              {products.length > 0 && (
+                <span className="ml-2 px-1.5 py-0.5 rounded-full text-xs bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                  {products.length}
+                </span>
+              )}
+              {activeTab === 'products' && (
                 <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-primary)]" />
               )}
             </button>
@@ -763,6 +884,25 @@ export default function AdminPage() {
                                   >
                                     <FaBookOpen className="text-[10px]" />
                                     Regen Wiki
+                                  </button>
+                                  <button
+                                    onClick={async () => {
+                                      try {
+                                        const res = await fetch(`/api/admin/projects/${p.path}/extract-insights`, {
+                                          method: 'POST', headers,
+                                        });
+                                        if (!res.ok) {
+                                          const err = await res.json();
+                                          alert(err.detail || 'Failed to start insight extraction');
+                                        }
+                                      } catch (err) { console.error('Extract insights error:', err); }
+                                    }}
+                                    disabled={batchStatus?.running || operatingProject === p.path}
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-purple-300 text-purple-600 hover:bg-purple-50 dark:border-purple-700 dark:text-purple-400 dark:hover:bg-purple-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    title="Extract structured insights from this project"
+                                  >
+                                    <FaBrain className="text-[10px]" />
+                                    Insights
                                   </button>
                                 </div>
                               </td>
@@ -1002,6 +1142,194 @@ export default function AdminPage() {
                     </span>
                   )}
                 </div>
+              </>
+            )}
+
+            {/* ============================================================ */}
+            {/* Tab 3: Products */}
+            {/* ============================================================ */}
+            {activeTab === 'products' && (
+              <>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)]">
+                    Products ({products.length})
+                  </h2>
+                  <button
+                    onClick={startCreateProduct}
+                    className="btn-apple inline-flex items-center gap-2 !rounded-xl"
+                  >
+                    <FaPlus className="text-xs" />
+                    New Product
+                  </button>
+                </div>
+
+                {/* Product Form (create/edit) */}
+                {showProductForm && (
+                  <div className="mb-4 p-4 rounded-md bg-[var(--background)] border border-[var(--accent-primary)]/30">
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className="font-medium text-[var(--foreground)]">
+                        {editingProduct ? `Edit: ${editingProduct.id}` : 'New Product'}
+                      </h3>
+                      <button
+                        onClick={() => { setShowProductForm(false); setEditingProduct(null); }}
+                        className="p-1 text-[var(--muted)] hover:text-[var(--foreground)] transition-colors"
+                      >
+                        <FaTimes />
+                      </button>
+                    </div>
+                    <div className="space-y-3">
+                      {!editingProduct && (
+                        <div>
+                          <label className="block text-xs text-[var(--muted)] mb-1">Product ID</label>
+                          <input
+                            type="text"
+                            value={productForm.id}
+                            onChange={(e) => setProductForm((f) => ({ ...f, id: e.target.value }))}
+                            placeholder="e.g. bas"
+                            className="w-full px-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                          />
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-xs text-[var(--muted)] mb-1">Name</label>
+                        <input
+                          type="text"
+                          value={productForm.name}
+                          onChange={(e) => setProductForm((f) => ({ ...f, name: e.target.value }))}
+                          placeholder="Product display name"
+                          className="w-full px-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-[var(--muted)] mb-1">Description</label>
+                        <textarea
+                          value={productForm.description}
+                          onChange={(e) => setProductForm((f) => ({ ...f, description: e.target.value }))}
+                          placeholder="Brief description of the product"
+                          rows={2}
+                          className="w-full px-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)] resize-none"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-[var(--muted)] mb-1">
+                          Repositories (one per line, e.g. group/repo)
+                        </label>
+                        <textarea
+                          value={productForm.repos}
+                          onChange={(e) => setProductForm((f) => ({ ...f, repos: e.target.value }))}
+                          placeholder={'group-a/bas-api\ngroup-b/bas-web\ngroup-c/bas-engine'}
+                          rows={5}
+                          className="w-full px-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)] font-mono resize-none"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleProductSave}
+                          disabled={!productForm.name.trim() || (!editingProduct && !productForm.id.trim())}
+                          className="btn-apple inline-flex items-center gap-2 !rounded-xl disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {editingProduct ? 'Update' : 'Create'}
+                        </button>
+                        <button
+                          onClick={() => { setShowProductForm(false); setEditingProduct(null); }}
+                          className="px-3 py-1.5 text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Product list */}
+                {products.length === 0 ? (
+                  <div className="text-center py-8 text-[var(--muted)]">
+                    <FaCubes className="text-3xl mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">No products defined yet.</p>
+                    <p className="text-xs mt-1">Products aggregate multiple repositories into logical units for cross-repo analysis.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {products.map((product) => (
+                      <div
+                        key={product.id}
+                        className="p-4 rounded-md bg-[var(--background)] border border-[var(--border-color)] hover:border-[var(--accent-primary)]/30 transition-colors"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <FaCubes className="text-purple-500 text-sm" />
+                              <span className="font-medium text-[var(--foreground)]">{product.name}</span>
+                              <span className="px-2 py-0.5 rounded text-xs font-mono bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+                                {product.id}
+                              </span>
+                            </div>
+                            {product.description && (
+                              <p className="text-sm text-[var(--muted)] mb-2">{product.description}</p>
+                            )}
+                            <div className="flex flex-wrap gap-1.5">
+                              {product.repos.map((repo) => (
+                                <span
+                                  key={repo}
+                                  className="px-2 py-0.5 rounded text-xs bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400 font-mono"
+                                >
+                                  {repo}
+                                </span>
+                              ))}
+                            </div>
+                            {product.repos.length === 0 && (
+                              <span className="text-xs text-[var(--muted)]">No repositories assigned</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 ml-4">
+                            <button
+                              onClick={() => startEditProduct(product)}
+                              className="p-1.5 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
+                              title="Edit product"
+                            >
+                              <FaEdit className="text-sm" />
+                            </button>
+                            <button
+                              onClick={() => handleProductDelete(product.id)}
+                              className="p-1.5 text-[var(--muted)] hover:text-red-500 transition-colors"
+                              title="Delete product"
+                            >
+                              <FaTrash className="text-sm" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between">
+                          <span className="text-xs text-[var(--muted)]">
+                            {product.repos.length} repo{product.repos.length !== 1 ? 's' : ''}
+                            {product.created_at && ` · Created ${new Date(product.created_at).toLocaleDateString()}`}
+                          </span>
+                          {product.repos.length > 0 && (
+                            <button
+                              onClick={async () => {
+                                try {
+                                  const res = await fetch(`/api/admin/products/${product.id}/extract-insights`, {
+                                    method: 'POST', headers,
+                                  });
+                                  if (res.ok) {
+                                    alert(`Insight extraction started for ${product.repos.length} repos`);
+                                  } else {
+                                    const err = await res.json();
+                                    alert(err.detail || 'Failed to start');
+                                  }
+                                } catch (err) { console.error('Extract insights error:', err); }
+                              }}
+                              className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-purple-300 text-purple-600 hover:bg-purple-50 dark:border-purple-700 dark:text-purple-400 dark:hover:bg-purple-900/20 transition-colors"
+                              title="Extract structured insights for all repos in this product"
+                            >
+                              <FaBrain className="text-[10px]" />
+                              Extract All Insights
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </>
             )}
 

@@ -189,3 +189,68 @@ This file contains...
 - When showing code, include line numbers and file paths when relevant
 - Use markdown formatting to improve readability
 </style>"""
+
+# ---------------------------------------------------------------------------
+# Insight extraction prompts (Phase 2 - Structured Knowledge)
+# ---------------------------------------------------------------------------
+
+INSIGHT_EXTRACT_FROM_WIKI_PROMPT = """You are a software architecture analyst. Given the wiki documentation of a repository, extract structured knowledge.
+
+## Wiki Content
+{wiki_content}
+
+## Task
+Extract the following as a JSON object:
+
+{{
+  "modules": [
+    {{
+      "name": "module name",
+      "description": "what this module does",
+      "key_files": ["file1.py", "file2.py"],
+      "complexity": "low|medium|high",
+      "io_pattern": "sync_request_response|async_event|batch_processing|streaming"
+    }}
+  ],
+  "endpoints": [
+    {{
+      "method": "GET|POST|PUT|DELETE|WS",
+      "path": "/api/example",
+      "description": "what this endpoint does",
+      "module": "which module it belongs to"
+    }}
+  ],
+  "tech_stack": ["python", "fastapi", "postgresql"],
+  "architecture_pattern": "monolith|monolith_with_api|microservices|serverless|event_driven"
+}}
+
+Rules:
+- Only include information clearly stated or strongly implied in the wiki
+- Module names should be concise (2-4 words)
+- If you cannot determine a field, use reasonable defaults
+- Return ONLY the JSON object, no other text"""
+
+INSIGHT_EXTRACT_DATA_MODELS_PROMPT = """You are a software architecture analyst. Given code snippets from a repository, extract data model definitions.
+
+## Code Context
+{code_context}
+
+## Task
+Extract data models as a JSON object:
+
+{{
+  "data_models": [
+    {{
+      "name": "ModelName",
+      "fields": ["field1", "field2", "field3"],
+      "source_file": "path/to/file.py",
+      "type": "database_model|api_schema|internal_dto|config"
+    }}
+  ]
+}}
+
+Rules:
+- Include classes that represent data (ORM models, Pydantic models, dataclasses, interfaces, structs)
+- Skip utility classes, service classes, and controllers
+- field names should be the actual field/attribute names
+- Return ONLY the JSON object, no other text"""

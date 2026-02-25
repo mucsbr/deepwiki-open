@@ -81,6 +81,10 @@ const nextConfig: NextConfig = {
         source: '/api/lang/config',
         destination: `${TARGET_SERVER_BASE_URL}/lang/config`,
       },
+      {
+        source: '/mcp/:path*',
+        destination: `${TARGET_SERVER_BASE_URL}/mcp/:path*`,
+      },
     ];
   },
 };

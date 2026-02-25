@@ -417,7 +417,7 @@ def scan_repo_imports(repo_dir: str) -> List[str]:
 async def _analyze_import_relations(
     repos_imports: Dict[str, List[str]],
     repos_info_list: List[Dict[str, Any]],
-    provider: str = "google",
+    provider: str = None,
     model: str = None,
 ) -> List[dict]:
     """Use LLM to match import statements against indexed repository list.
@@ -428,8 +428,6 @@ async def _analyze_import_relations(
     repos_with_imports = {k: v for k, v in repos_imports.items() if v}
     if not repos_with_imports or len(repos_info_list) < 2:
         return []
-
-    from api.config import get_model_config
 
     # Build indexed repos summary
     repos_summary = ""
@@ -476,39 +474,19 @@ If no cross-repo imports are found, return an empty array [].
 Respond ONLY with the JSON array, no other text."""
 
         try:
-            import google.generativeai as genai
+            from api.wiki_generator import _call_llm_inner
+            from api.config import configs
 
-            model_config = get_model_config(provider, model)
-            model_kwargs = model_config["model_kwargs"]
+            effective_provider = provider or configs.get("default_provider", "openai")
+            effective_model = model
+            if not effective_model:
+                provider_cfg = configs.get("providers", {}).get(effective_provider, {})
+                effective_model = provider_cfg.get("default_model", "")
 
-            if provider == "google":
-                gen_model = genai.GenerativeModel(
-                    model_name=model_kwargs["model"],
-                    generation_config={
-                        "temperature": model_kwargs.get("temperature", 0.3),
-                        "top_p": model_kwargs.get("top_p", 0.8),
-                    },
-                )
-                response = gen_model.generate_content(prompt)
-                text = response.text
-            else:
-                from adalflow.core.types import ModelType
-
-                client = model_config["model_client"]()
-                api_kwargs = client.convert_inputs_to_api_kwargs(
-                    input=prompt,
-                    model_kwargs={**model_kwargs, "stream": False},
-                    model_type=ModelType.LLM,
-                )
-                response = await client.acall(
-                    api_kwargs=api_kwargs, model_type=ModelType.LLM
-                )
-                if isinstance(response, str):
-                    text = response
-                elif hasattr(response, "text"):
-                    text = response.text
-                else:
-                    text = str(response)
+            text = await _call_llm_inner(
+                effective_provider, effective_model, prompt,
+                label="import_relation_analysis",
+            )
 
             # Parse JSON from response
             text = text.strip()
@@ -618,14 +596,12 @@ def _match_dependencies_to_repos(
 
 async def _analyze_semantic_relations(
     repos_info: List[Dict[str, Any]],
-    provider: str = "google",
+    provider: str = None,
     model: str = None,
 ) -> List[dict]:
     """Use LLM to infer semantic relationships between repositories."""
     if len(repos_info) < 2:
         return []
-
-    from api.config import get_model_config
 
     # Build the prompt
     repo_list_text = ""
@@ -656,39 +632,19 @@ If no relationships are found, return an empty array.
 Respond ONLY with the JSON array, no other text."""
 
     try:
-        import google.generativeai as genai
+        from api.wiki_generator import _call_llm_inner
+        from api.config import configs
 
-        model_config = get_model_config(provider, model)
-        model_kwargs = model_config["model_kwargs"]
+        effective_provider = provider or configs.get("default_provider", "openai")
+        effective_model = model
+        if not effective_model:
+            provider_cfg = configs.get("providers", {}).get(effective_provider, {})
+            effective_model = provider_cfg.get("default_model", "")
 
-        if provider == "google":
-            gen_model = genai.GenerativeModel(
-                model_name=model_kwargs["model"],
-                generation_config={
-                    "temperature": model_kwargs.get("temperature", 0.3),
-                    "top_p": model_kwargs.get("top_p", 0.8),
-                },
-            )
-            response = gen_model.generate_content(prompt)
-            text = response.text
-        else:
-            # For non-Google providers, use the model client directly
-            from adalflow.core.types import ModelType
-
-            client = model_config["model_client"]()
-            api_kwargs = client.convert_inputs_to_api_kwargs(
-                input=prompt,
-                model_kwargs={**model_kwargs, "stream": False},
-                model_type=ModelType.LLM,
-            )
-            response = await client.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
-            # Extract text from response
-            if isinstance(response, str):
-                text = response
-            elif hasattr(response, "text"):
-                text = response.text
-            else:
-                text = str(response)
+        text = await _call_llm_inner(
+            effective_provider, effective_model, prompt,
+            label="semantic_relation_analysis",
+        )
 
         # Parse JSON from response
         # Strip markdown code fences if present
@@ -745,7 +701,7 @@ def get_analysis_status() -> dict:
 
 
 async def analyze_all_relations(
-    provider: str = "google",
+    provider: str = None,
     model: str = None,
 ) -> dict:
     """Run full relation analysis across all indexed repos.
