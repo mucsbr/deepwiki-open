@@ -115,9 +115,10 @@ export default function AdminPage() {
   // Single project operation state
   const [operatingProject, setOperatingProject] = useState<string | null>(null);
 
-  // Project list filters
+  // Project list filters & selection
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
 
   // Batch index selection states
   const [groups, setGroups] = useState<GitLabGroup[]>([]);
@@ -410,6 +411,63 @@ export default function AdminPage() {
     return list;
   }, [projects, statusFilter, searchQuery]);
 
+  // Selection helpers for indexed projects list
+  const allFilteredSelected = useMemo(
+    () => filteredProjects.length > 0 && filteredProjects.every((p) => selectedPaths.has(p.path)),
+    [filteredProjects, selectedPaths]
+  );
+  const someFilteredSelected = useMemo(
+    () => !allFilteredSelected && filteredProjects.some((p) => selectedPaths.has(p.path)),
+    [filteredProjects, selectedPaths, allFilteredSelected]
+  );
+  const selectedProjectIds = useMemo(
+    () => projects.filter((p) => selectedPaths.has(p.path) && p.project_id).map((p) => p.project_id as number),
+    [projects, selectedPaths]
+  );
+
+  const toggleSelectAll = () => {
+    if (allFilteredSelected) {
+      const next = new Set(selectedPaths);
+      filteredProjects.forEach((p) => next.delete(p.path));
+      setSelectedPaths(next);
+    } else {
+      const next = new Set(selectedPaths);
+      filteredProjects.forEach((p) => next.add(p.path));
+      setSelectedPaths(next);
+    }
+  };
+  const toggleSelectOne = (path: string) => {
+    const next = new Set(selectedPaths);
+    if (next.has(path)) next.delete(path); else next.add(path);
+    setSelectedPaths(next);
+  };
+
+  const triggerBulkOperation = async (operation: 'reindex' | 'regenerate_wiki') => {
+    if (selectedProjectIds.length === 0) return;
+    const endpointMap: Record<string, string> = {
+      reindex: '/api/admin/reindex',
+      regenerate_wiki: '/api/admin/regenerate-wiki',
+    };
+    try {
+      const res = await fetch(endpointMap[operation], {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ project_ids: selectedProjectIds }),
+      });
+      if (res.ok) {
+        setBatchStatus((prev) =>
+          prev ? { ...prev, running: true, operation, progress: { status: 'starting' } } : prev
+        );
+        setSelectedPaths(new Set());
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to start operation');
+      }
+    } catch (err) {
+      console.error('Bulk operation error:', err);
+    }
+  };
+
   const availableStatuses = useMemo(() => {
     const s = new Set(projects.map((p) => p.status));
     return Array.from(s).sort();
@@ -610,6 +668,16 @@ export default function AdminPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-[var(--border-color)] text-left text-[var(--muted)]">
+                        <th className="pb-2 pr-2 w-8">
+                          <input
+                            type="checkbox"
+                            checked={allFilteredSelected}
+                            ref={(el) => { if (el) el.indeterminate = someFilteredSelected; }}
+                            onChange={toggleSelectAll}
+                            className="accent-[var(--accent-primary)]"
+                            title="Select all visible"
+                          />
+                        </th>
                         <th className="pb-2 pr-4">Project Path</th>
                         <th className="pb-2 pr-4">Status</th>
                         <th className="pb-2 pr-4">Wiki</th>
@@ -621,7 +689,7 @@ export default function AdminPage() {
                     <tbody>
                       {filteredProjects.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="py-8 text-center text-[var(--muted)]">
+                          <td colSpan={7} className="py-8 text-center text-[var(--muted)]">
                             No projects found.
                           </td>
                         </tr>
@@ -638,6 +706,14 @@ export default function AdminPage() {
                                   : 'hover:bg-[var(--accent-primary)]/5'
                               }`}
                             >
+                              <td className="py-2 pr-2 w-8">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPaths.has(p.path)}
+                                  onChange={() => toggleSelectOne(p.path)}
+                                  className="accent-[var(--accent-primary)]"
+                                />
+                              </td>
                               <td className="py-2 pr-4 font-medium text-[var(--foreground)]">
                                 <div className="flex items-center gap-2">
                                   {p.path}
@@ -697,6 +773,37 @@ export default function AdminPage() {
                     </tbody>
                   </table>
                 </div>
+
+                {/* Bulk action bar */}
+                {selectedPaths.size > 0 && (
+                  <div className="mt-3 flex items-center gap-3 p-3 rounded-md bg-[var(--accent-primary)]/5 border border-[var(--accent-primary)]/20">
+                    <span className="text-sm text-[var(--foreground)] font-medium">
+                      {selectedPaths.size} selected
+                    </span>
+                    <button
+                      onClick={() => triggerBulkOperation('regenerate_wiki')}
+                      disabled={batchStatus?.running || selectedProjectIds.length === 0}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <FaBookOpen className="text-xs" />
+                      Regen Wiki ({selectedProjectIds.length})
+                    </button>
+                    <button
+                      onClick={() => triggerBulkOperation('reindex')}
+                      disabled={batchStatus?.running || selectedProjectIds.length === 0}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <FaRedo className="text-xs" />
+                      Reindex ({selectedProjectIds.length})
+                    </button>
+                    <button
+                      onClick={() => setSelectedPaths(new Set())}
+                      className="text-sm text-[var(--muted)] hover:text-[var(--foreground)] transition-colors ml-auto"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                )}
               </>
             )}
 
