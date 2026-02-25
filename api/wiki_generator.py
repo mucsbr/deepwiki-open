@@ -335,7 +335,7 @@ def _extract_llm_content(response) -> str:
         parsed = _parse_sse_text(response)
         if parsed:
             return parsed
-        logger.warning("[_extract_llm_content] SSE parsing yielded empty content; raw preview: %s", response[:200])
+        logger.warning("[_extract_llm_content] SSE parsing yielded empty content; raw preview: %s", response[:1000])
         return ""
 
     # 3. Plain string
