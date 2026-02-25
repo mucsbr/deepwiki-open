@@ -39,11 +39,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setTokenState] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const setToken = useCallback((newToken: string) => {
-    setTokenState(newToken);
-    localStorage.setItem(JWT_STORAGE_KEY, newToken);
-  }, []);
-
   const logout = useCallback(() => {
     setUser(null);
     setTokenState(null);
@@ -75,6 +70,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return false;
     }
   }, [logout]);
+
+  const setToken = useCallback((newToken: string) => {
+    setTokenState(newToken);
+    localStorage.setItem(JWT_STORAGE_KEY, newToken);
+    // Immediately fetch user info so isAuthenticated becomes true
+    fetchUser(newToken);
+  }, [fetchUser]);
 
   // Initialize from localStorage on mount
   useEffect(() => {
