@@ -14,10 +14,15 @@ import { useLanguage } from '@/contexts/LanguageContext';
 import type RepoInfo from '@/types/repoinfo';
 
 interface IndexedProject {
-  path: string;
-  project_id: number | null;
-  status: string;
+  id: number | null;
+  name: string;
+  path_with_namespace: string;
+  description: string;
+  last_activity_at: string;
+  web_url: string;
+  avatar_url: string;
   indexed_at: string;
+  index_status: string;
 }
 
 export default function GlobalAskPage() {
@@ -39,8 +44,8 @@ export default function GlobalAskPage() {
         setProjects(data);
         // Default: select all indexed repos
         const allPaths = data
-          .filter((p: IndexedProject) => p.status === 'indexed')
-          .map((p: IndexedProject) => p.path);
+          .filter((p: IndexedProject) => p.index_status === 'indexed')
+          .map((p: IndexedProject) => p.path_with_namespace);
         setSelectedRepos(new Set(allPaths));
       }
     } catch (err) {
@@ -67,8 +72,8 @@ export default function GlobalAskPage() {
 
   const selectAll = () => {
     const allPaths = projects
-      .filter((p) => p.status === 'indexed')
-      .map((p) => p.path);
+      .filter((p) => p.index_status === 'indexed')
+      .map((p) => p.path_with_namespace);
     setSelectedRepos(new Set(allPaths));
   };
 
@@ -102,7 +107,7 @@ export default function GlobalAskPage() {
     );
   }
 
-  const indexedProjects = projects.filter((p) => p.status === 'indexed');
+  const indexedProjects = projects.filter((p) => p.index_status === 'indexed');
 
   return (
     <div className="min-h-screen bg-[var(--background)] p-4 md:p-8">
@@ -164,18 +169,18 @@ export default function GlobalAskPage() {
           ) : (
             <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
               {indexedProjects.map((p) => {
-                const isSelected = selectedRepos.has(p.path);
-                const shortName = p.path.split('/').pop() || p.path;
+                const isSelected = selectedRepos.has(p.path_with_namespace);
+                const shortName = p.path_with_namespace.split('/').pop() || p.path_with_namespace;
                 return (
                   <button
-                    key={p.path}
-                    onClick={() => toggleRepo(p.path)}
+                    key={p.path_with_namespace}
+                    onClick={() => toggleRepo(p.path_with_namespace)}
                     className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border transition-colors ${
                       isSelected
                         ? 'bg-[var(--accent-primary)]/10 border-[var(--accent-primary)]/30 text-[var(--accent-primary)]'
                         : 'bg-[var(--background)]/50 border-[var(--border-color)] text-[var(--muted)]'
                     }`}
-                    title={p.path}
+                    title={p.path_with_namespace}
                   >
                     {shortName}
                     {isSelected && (
