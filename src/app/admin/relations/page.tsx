@@ -1,15 +1,16 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import {
   FaArrowLeft,
   FaSync,
   FaProjectDiagram,
   FaSpinner,
+  FaSearch,
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
-import RelationGraph from '@/components/RelationGraph';
+import RelationGraph, { EDGE_STYLES, type ViewMode } from '@/components/RelationGraph';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
 
 interface RepoNode {
@@ -39,6 +40,12 @@ interface AnalysisStatus {
   error: string | null;
 }
 
+const VIEW_MODES: { key: ViewMode; label: string }[] = [
+  { key: 'group', label: 'Group' },
+  { key: 'focus', label: 'Focus' },
+  { key: 'full', label: 'Full' },
+];
+
 export default function RelationsPage() {
   const { token, isAuthenticated, isAdmin, isLoading: authLoading } = useAuth();
 
@@ -46,6 +53,83 @@ export default function RelationsPage() {
   const [status, setStatus] = useState<AnalysisStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [analyzing, setAnalyzing] = useState(false);
+
+  // Graph control state
+  const [viewMode, setViewMode] = useState<ViewMode>('group');
+  const [focusRepo, setFocusRepo] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [edgeFilters, setEdgeFilters] = useState<Record<string, boolean>>({
+    depends_on: true,
+    likely_depends_on: true,
+    provides_api_for: true,
+    shares_protocol: true,
+    related: false, // hidden by default
+  });
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  // Close suggestions on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (searchRef.current && !searchRef.current.contains(e.target as HTMLElement)) {
+        setShowSuggestions(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Repo path list for search autocomplete
+  const repoPaths = useMemo(() => {
+    if (!data) return [];
+    return Object.keys(data.repos).sort();
+  }, [data]);
+
+  // Filtered suggestions
+  const suggestions = useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase();
+    return repoPaths.filter((p) => p.toLowerCase().includes(q)).slice(0, 10);
+  }, [searchQuery, repoPaths]);
+
+  // Collect unique edge types from data
+  const edgeTypes = useMemo(() => {
+    if (!data) return [];
+    const types = new Set<string>();
+    for (const e of data.edges) types.add(e.type);
+    return Array.from(types).sort();
+  }, [data]);
+
+  // Ensure edgeFilters has entries for all edge types in data
+  useEffect(() => {
+    if (edgeTypes.length === 0) return;
+    setEdgeFilters((prev) => {
+      const next = { ...prev };
+      for (const t of edgeTypes) {
+        if (!(t in next)) {
+          next[t] = t !== 'related'; // default: related off, others on
+        }
+      }
+      return next;
+    });
+  }, [edgeTypes]);
+
+  const handleSelectRepo = useCallback((path: string) => {
+    setFocusRepo(path);
+    setViewMode('focus');
+    setSearchQuery(path);
+    setShowSuggestions(false);
+  }, []);
+
+  const handleFocusRepo = useCallback((repoPath: string) => {
+    setFocusRepo(repoPath);
+    setViewMode('focus');
+    setSearchQuery(repoPath);
+  }, []);
+
+  const toggleEdgeFilter = useCallback((type: string) => {
+    setEdgeFilters((prev) => ({ ...prev, [type]: !prev[type] }));
+  }, []);
 
   const fetchRelations = useCallback(async () => {
     if (!token) return;
@@ -118,7 +202,6 @@ export default function RelationsPage() {
         },
         body: JSON.stringify({}),
       });
-      // Start polling
       fetchStatus();
     } catch (err) {
       console.error('Failed to trigger analysis:', err);
@@ -252,7 +335,108 @@ export default function RelationsPage() {
               <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)] mb-4">
                 Dependency Graph
               </h2>
-              <RelationGraph data={data} />
+
+              {/* Toolbar */}
+              <div className="flex flex-wrap items-center gap-3 mb-4">
+                {/* View mode tabs */}
+                <div className="flex rounded-lg border border-[var(--border-color)] overflow-hidden">
+                  {VIEW_MODES.map((vm) => (
+                    <button
+                      key={vm.key}
+                      onClick={() => {
+                        setViewMode(vm.key);
+                        if (vm.key === 'group') {
+                          setFocusRepo(null);
+                          setSearchQuery('');
+                        }
+                      }}
+                      className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                        viewMode === vm.key
+                          ? 'bg-[var(--accent-primary)] text-white'
+                          : 'bg-[var(--card-bg)] text-[var(--muted)] hover:text-[var(--foreground)]'
+                      }`}
+                    >
+                      {vm.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Search box */}
+                <div ref={searchRef} className="relative flex-1 min-w-[200px] max-w-[360px]">
+                  <div className="relative">
+                    <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
+                    <input
+                      type="text"
+                      placeholder="Search repo..."
+                      value={searchQuery}
+                      onChange={(e) => {
+                        setSearchQuery(e.target.value);
+                        setShowSuggestions(true);
+                      }}
+                      onFocus={() => {
+                        if (searchQuery.trim()) setShowSuggestions(true);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && suggestions.length > 0) {
+                          handleSelectRepo(suggestions[0]);
+                        }
+                        if (e.key === 'Escape') {
+                          setShowSuggestions(false);
+                        }
+                      }}
+                      className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] text-[var(--foreground)] placeholder:text-[var(--muted)] focus:outline-none focus:border-[var(--accent-primary)] transition-colors"
+                    />
+                  </div>
+                  {/* Autocomplete dropdown */}
+                  {showSuggestions && suggestions.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] shadow-lg z-30 max-h-48 overflow-y-auto">
+                      {suggestions.map((path) => (
+                        <button
+                          key={path}
+                          onClick={() => handleSelectRepo(path)}
+                          className="w-full text-left px-3 py-2 text-xs text-[var(--foreground)] hover:bg-[var(--accent-primary)]/10 transition-colors truncate"
+                        >
+                          {path}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Edge type filter toggles */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {edgeTypes.map((type) => {
+                    const style = EDGE_STYLES[type] || EDGE_STYLES.related;
+                    const isOn = edgeFilters[type] !== false;
+                    return (
+                      <button
+                        key={type}
+                        onClick={() => toggleEdgeFilter(type)}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-medium border transition-all ${
+                          isOn
+                            ? 'opacity-100'
+                            : 'opacity-40 grayscale'
+                        }`}
+                        style={{
+                          borderColor: `${style.color}40`,
+                          backgroundColor: isOn ? `${style.color}15` : 'transparent',
+                          color: style.color,
+                        }}
+                      >
+                        {isOn ? '\u2713 ' : ''}{type.replace(/_/g, ' ')}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <RelationGraph
+                data={data}
+                viewMode={viewMode}
+                focusRepo={focusRepo}
+                edgeFilters={edgeFilters}
+                onFocusRepo={handleFocusRepo}
+              />
             </div>
 
             {/* Edge list — card style */}
