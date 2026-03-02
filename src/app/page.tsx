@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { FaWikipediaW, FaGitlab, FaSearch, FaSignOutAlt, FaBookOpen, FaCog, FaChevronRight, FaChevronDown, FaFolder, FaProjectDiagram, FaComments } from 'react-icons/fa';
+import { FaWikipediaW, FaGitlab, FaSearch, FaSignOutAlt, FaBookOpen, FaCog, FaChevronRight, FaChevronDown, FaFolder, FaProjectDiagram, FaComments, FaKey, FaCopy, FaCheck, FaTimes } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
@@ -50,6 +50,47 @@ export default function Home() {
   const [projectsLoading, setProjectsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  // MCP Token modal state
+  const [mcpModalOpen, setMcpModalOpen] = useState(false);
+  const [mcpToken, setMcpToken] = useState('');
+  const [mcpExpiresIn, setMcpExpiresIn] = useState(0);
+  const [mcpTokenLoading, setMcpTokenLoading] = useState(false);
+  const [mcpCopied, setMcpCopied] = useState<'token' | 'command' | null>(null);
+
+  const fetchMcpToken = async () => {
+    if (!token) return;
+    setMcpTokenLoading(true);
+    try {
+      const resp = await fetch('/auth/mcp-token', {
+        headers: getAuthHeaders(token),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        setMcpToken(data.token);
+        setMcpExpiresIn(data.expires_in_days);
+      }
+    } catch (err) {
+      console.error('Failed to fetch MCP token:', err);
+    } finally {
+      setMcpTokenLoading(false);
+    }
+  };
+
+  const openMcpModal = () => {
+    setMcpModalOpen(true);
+    fetchMcpToken();
+  };
+
+  const copyToClipboard = async (text: string, type: 'token' | 'command') => {
+    await navigator.clipboard.writeText(text);
+    setMcpCopied(type);
+    setTimeout(() => setMcpCopied(null), 2000);
+  };
+
+  const mcpAddCommand = mcpToken && typeof window !== 'undefined'
+    ? `claude mcp add --transport http deepwiki ${window.location.origin}/mcp --header "Authorization: Bearer ${mcpToken}"`
+    : '';
 
   // Fetch accessible & indexed projects
   useEffect(() => {
@@ -241,6 +282,15 @@ export default function Home() {
               </>
             )}
 
+            {/* MCP Token */}
+            <button
+              onClick={openMcpModal}
+              title="MCP Token"
+              className="p-2 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
+            >
+              <FaKey />
+            </button>
+
             {/* User avatar + name */}
             <div className="flex items-center gap-2">
               {user?.avatar_url && (
@@ -370,6 +420,77 @@ export default function Home() {
           )}
         </div>
       </main>
+
+      {/* MCP Token Modal */}
+      {mcpModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="glass-card w-full max-w-lg mx-4 p-6 relative">
+            <button
+              onClick={() => setMcpModalOpen(false)}
+              className="absolute top-4 right-4 text-[var(--muted)] hover:text-[var(--foreground)] transition-colors"
+            >
+              <FaTimes />
+            </button>
+
+            <div className="flex items-center gap-3 mb-4">
+              <FaKey className="text-xl text-[var(--accent-primary)]" />
+              <h3 className="text-lg font-semibold text-[var(--foreground)]">MCP Token</h3>
+            </div>
+
+            {mcpTokenLoading ? (
+              <div className="flex justify-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-[var(--accent-primary)]"></div>
+              </div>
+            ) : mcpToken ? (
+              <div className="space-y-4">
+                <p className="text-sm text-[var(--muted)]">
+                  Use this token to connect MCP clients (e.g. Claude Code) to DeepWiki. Valid for {mcpExpiresIn} days.
+                </p>
+
+                {/* Token */}
+                <div>
+                  <label className="text-xs font-medium text-[var(--muted)] mb-1 block">Token</label>
+                  <div className="flex items-center gap-2">
+                    <code className="flex-1 text-xs bg-[var(--background)] border border-[var(--border-color)] rounded-lg p-3 break-all max-h-24 overflow-y-auto">
+                      {mcpToken}
+                    </code>
+                    <button
+                      onClick={() => copyToClipboard(mcpToken, 'token')}
+                      className="shrink-0 p-2 rounded-lg border border-[var(--border-color)] hover:bg-[var(--accent-primary)]/10 transition-colors"
+                      title="Copy token"
+                    >
+                      {mcpCopied === 'token' ? <FaCheck className="text-[#30d158]" /> : <FaCopy className="text-[var(--muted)]" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Claude Code command */}
+                <div>
+                  <label className="text-xs font-medium text-[var(--muted)] mb-1 block">Claude Code command</label>
+                  <div className="flex items-start gap-2">
+                    <code className="flex-1 text-xs bg-[var(--background)] border border-[var(--border-color)] rounded-lg p-3 break-all max-h-24 overflow-y-auto">
+                      {mcpAddCommand}
+                    </code>
+                    <button
+                      onClick={() => copyToClipboard(mcpAddCommand, 'command')}
+                      className="shrink-0 p-2 rounded-lg border border-[var(--border-color)] hover:bg-[var(--accent-primary)]/10 transition-colors"
+                      title="Copy command"
+                    >
+                      {mcpCopied === 'command' ? <FaCheck className="text-[#30d158]" /> : <FaCopy className="text-[var(--muted)]" />}
+                    </button>
+                  </div>
+                </div>
+
+                <p className="text-xs text-[var(--muted)]">
+                  Expires: {new Date(Date.now() + mcpExpiresIn * 86400000).toLocaleDateString()}
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-[var(--highlight)] py-4">Failed to generate MCP token.</p>
+            )}
+          </div>
+        </div>
+      )}
 
       <footer className="max-w-6xl mx-auto mt-8 flex flex-col gap-4 w-full">
         <div className="flex flex-col sm:flex-row justify-between items-center gap-4 glass-card p-4">

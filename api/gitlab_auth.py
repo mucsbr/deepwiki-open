@@ -64,6 +64,7 @@ def decrypt_token(encrypted: str) -> str:
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 8
+MCP_TOKEN_EXPIRE_DAYS = 30
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/gitlab/login", auto_error=False)
 
@@ -71,6 +72,15 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/gitlab/login", auto_error=F
 def create_jwt(payload: dict) -> str:
     to_encode = payload.copy()
     expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    to_encode["exp"] = expire
+    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_mcp_token(payload: dict) -> str:
+    """Sign a long-lived JWT intended for MCP clients (e.g. Claude Code)."""
+    to_encode = payload.copy()
+    to_encode["type"] = "mcp"
+    expire = datetime.now(timezone.utc) + timedelta(days=MCP_TOKEN_EXPIRE_DAYS)
     to_encode["exp"] = expire
     return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=ALGORITHM)
 
@@ -185,3 +195,19 @@ async def get_me(current_user: dict = Depends(get_current_user)):
         "avatar_url": current_user.get("avatar_url", ""),
         "is_admin": current_user["username"] in ADMIN_USERNAMES,
     }
+
+
+@router.get("/mcp-token")
+async def get_mcp_token(current_user: dict = Depends(get_current_user)):
+    """Issue a long-lived MCP token for the authenticated user.
+
+    The token is valid for MCP_TOKEN_EXPIRE_DAYS days and can be used as
+    a Bearer token when connecting MCP clients (e.g. Claude Code) to the
+    DeepWiki MCP endpoint.
+    """
+    token = create_mcp_token({
+        "gitlab_user_id": current_user["gitlab_user_id"],
+        "username": current_user["username"],
+        "name": current_user["name"],
+    })
+    return {"token": token, "expires_in_days": MCP_TOKEN_EXPIRE_DAYS}

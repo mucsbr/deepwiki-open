@@ -15,6 +15,16 @@ import logging
 import os
 from typing import Optional
 
+from jose import JWTError
+from starlette.authentication import (
+    AuthCredentials,
+    AuthenticationBackend,
+    AuthenticationError,
+    SimpleUser,
+)
+from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.requests import HTTPConnection
+from starlette.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 
 from api.product_manager import get_product, list_products as pm_list_products
@@ -631,3 +641,52 @@ def get_product_insights(product_id: str) -> str:
 
     result = aggregate_product_insights(product_id)
     return json.dumps(result, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Authenticated MCP app wrapper
+# ---------------------------------------------------------------------------
+
+
+class _JWTAuthBackend(AuthenticationBackend):
+    """Validate Bearer JWT tokens for MCP requests.
+
+    Accepts both regular session JWTs (8 h) and long-lived MCP tokens (30 d).
+    """
+
+    async def authenticate(self, conn: HTTPConnection):
+        auth_header = conn.headers.get("Authorization")
+        if not auth_header:
+            raise AuthenticationError("Missing Authorization header")
+
+        scheme, _, token = auth_header.partition(" ")
+        if scheme.lower() != "bearer" or not token:
+            raise AuthenticationError("Invalid Authorization header format")
+
+        try:
+            from api.gitlab_auth import decode_jwt
+            payload = decode_jwt(token)
+        except JWTError as exc:
+            logger.warning("MCP JWT validation failed: %s", exc)
+            raise AuthenticationError("Invalid or expired token")
+
+        username = payload.get("username", "anonymous")
+        return AuthCredentials(["authenticated"]), SimpleUser(username)
+
+
+def _on_auth_error(_conn: HTTPConnection, exc: Exception):
+    """Return 401 JSON for failed or missing authentication."""
+    return JSONResponse(
+        {"error": "Not authenticated", "detail": str(exc)},
+        status_code=401,
+    )
+
+
+def get_authenticated_mcp_app():
+    """Return the MCP Streamable-HTTP ASGI app wrapped with JWT auth."""
+    inner = mcp.streamable_http_app()
+    return AuthenticationMiddleware(
+        inner,
+        backend=_JWTAuthBackend(),
+        on_error=_on_auth_error,
+    )
