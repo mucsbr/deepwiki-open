@@ -242,7 +242,6 @@ async def get_all_visible_projects(
         )
 
     params: dict = {
-        "membership": "true",
         "per_page": min(per_page, 100),
         "page": page,
         "order_by": "name",
