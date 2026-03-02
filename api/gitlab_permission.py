@@ -110,8 +110,12 @@ async def get_user_accessible_projects(
     gitlab_url: str,
 ) -> List[dict]:
     """
-    Return all projects the user has access to (membership=true).
-    Handles pagination automatically.
+    Return all projects visible to the user's token.
+
+    No min_access_level filter — that param excludes personal/user-namespace
+    projects (e.g. root/) where the user is the owner but has no explicit
+    member record. The OAuth token already scopes results to what the user
+    can see.
     """
     projects: List[dict] = []
     page = 1
@@ -123,7 +127,6 @@ async def get_user_accessible_projects(
                 resp = await client.get(
                     f"{gitlab_url}/api/v4/projects",
                     params={
-                        "min_access_level": 10,
                         "per_page": per_page,
                         "page": page,
                     },
