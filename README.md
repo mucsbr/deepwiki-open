@@ -37,6 +37,17 @@
 - **Multiple Model Providers**: Support for Google Gemini, OpenAI, OpenRouter, and local Ollama models
 - **Flexible Embeddings**: Choose between OpenAI, Google AI, or local Ollama embeddings for optimal performance
 
+### Enterprise Features
+
+- **GitLab SSO**: OAuth2-based single sign-on with GitLab instances
+- **Admin Dashboard**: Batch indexing, project management, system monitoring
+- **MCP Server**: JWT-authenticated [Model Context Protocol](https://modelcontextprotocol.io/) endpoint — connect Claude Code, Codex, or any MCP client to query your codebase
+- **Product Management**: Group multiple repositories into logical products for cross-repo analysis
+- **Repository Relations**: Automated dependency graph visualization between repositories
+- **Global Ask**: Cross-repo Q&A across all indexed projects
+- **Structured Insights**: LLM-extracted modules, API endpoints, data models, and tech stack per project
+- **Permission System**: GitLab-based access control with in-memory caching (per-project 5 min, project list 24h)
+
 ## 🚀 Quick Start (Super Easy!)
 
 ### Option 1: Using Docker
@@ -176,23 +187,41 @@ graph TD
 
 ```
 deepwiki/
-├── api/                  # Backend API server
-│   ├── main.py           # API entry point
-│   ├── api.py            # FastAPI implementation
-│   ├── rag.py            # Retrieval Augmented Generation
-│   ├── data_pipeline.py  # Data processing utilities
-│   ├── pyproject.toml     # Python dependencies (Poetry)
-│   └── poetry.lock        # Locked Python dependency versions
+├── api/                        # Backend API server
+│   ├── main.py                 # Entry point (uvicorn)
+│   ├── api.py                  # FastAPI app, REST/WebSocket endpoints
+│   ├── gitlab_auth.py          # GitLab OAuth2 SSO, JWT, MCP token
+│   ├── gitlab_permission.py    # Repo permission checking + cache
+│   ├── admin.py                # Admin API routes
+│   ├── batch_indexer.py        # Background batch indexing
+│   ├── mcp_server.py           # MCP server (JWT-authenticated)
+│   ├── metadata_store.py       # Index metadata JSON store
+│   ├── product_manager.py      # Product CRUD
+│   ├── repo_relations.py       # Repo dependency analysis
+│   ├── insight_extractor.py    # Structured knowledge extraction
+│   ├── wiki_generator.py       # Core wiki generation logic
+│   ├── rag.py                  # Single-repo RAG
+│   ├── multi_rag.py            # Multi-repo RAG
+│   ├── data_pipeline.py        # Repo cloning, embeddings
+│   ├── config.py               # Config loader, env vars
+│   ├── prompts.py              # LLM prompt templates
+│   ├── config/                 # JSON config files
+│   └── *_client.py             # LLM provider clients
 │
-├── src/                  # Frontend Next.js app
-│   ├── app/              # Next.js app directory
-│   │   └── page.tsx      # Main application page
-│   └── components/       # React components
-│       └── Mermaid.tsx   # Mermaid diagram renderer
+├── src/                        # Frontend Next.js app
+│   ├── app/
+│   │   ├── page.tsx            # Home (SSO login, project list)
+│   │   ├── [owner]/[repo]/     # Wiki viewer
+│   │   ├── admin/              # Admin dashboard
+│   │   ├── admin/relations/    # Repo dependency graph
+│   │   ├── ask/                # Global Ask (cross-repo Q&A)
+│   │   └── auth/callback/      # OAuth callback
+│   ├── components/             # React components
+│   └── contexts/               # Auth, Language contexts
 │
-├── public/               # Static assets
-├── package.json          # JavaScript dependencies
-└── .env                  # Environment variables (create this)
+├── public/                     # Static assets
+├── package.json                # JavaScript dependencies
+└── .env                        # Environment variables (create this)
 ```
 
 ## 🤖 Provider-Based Model Selection System
@@ -407,25 +436,37 @@ docker-compose up
 
 ### Environment Variables
 
-| Variable             | Description                                                  | Required | Note                                                                                                     |
-|----------------------|--------------------------------------------------------------|----------|----------------------------------------------------------------------------------------------------------|
-| `GOOGLE_API_KEY`     | Google Gemini API key for AI generation and embeddings      | No | Required for Google Gemini models and Google AI embeddings                                               
-| `OPENAI_API_KEY`     | OpenAI API key for embeddings and models                     | Conditional | Required if using OpenAI embeddings or models                                                            |
-| `OPENROUTER_API_KEY` | OpenRouter API key for alternative models                    | No | Required only if you want to use OpenRouter models                                                       |
-| `AWS_ACCESS_KEY_ID`  | AWS access key ID for Bedrock                                 | No | Required for Bedrock if not using instance/role-based credentials                                        |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret access key for Bedrock                          | No | Required for Bedrock if not using instance/role-based credentials                                        |
-| `AWS_SESSION_TOKEN`  | AWS session token for Bedrock (STS)                            | No | Required when using temporary credentials                                                                |
-| `AWS_REGION`         | AWS region for Bedrock (default: `us-east-1`)                  | No | Used by Bedrock client                                                                                   |
-| `AWS_ROLE_ARN`       | AWS role ARN to assume for Bedrock                             | No | If set, the Bedrock client will call STS AssumeRole                                                     |
-| `AZURE_OPENAI_API_KEY` | Azure OpenAI API key                    | No | Required only if you want to use Azure OpenAI models                                                       |
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint                    | No | Required only if you want to use Azure OpenAI models                                                       |
-| `AZURE_OPENAI_VERSION` | Azure OpenAI version                     | No | Required only if you want to use Azure OpenAI models                                                       |
-| `OLLAMA_HOST`        | Ollama Host (default: http://localhost:11434)                | No | Required only if you want to use external Ollama server                                                  |
-| `DEEPWIKI_EMBEDDER_TYPE` | Embedder type: `openai`, `google`, `ollama`, or `bedrock` (default: `openai`) | No | Controls which embedding provider to use                                                              |
-| `PORT`               | Port for the API server (default: 8001)                      | No | If you host API and frontend on the same machine, make sure change port of `SERVER_BASE_URL` accordingly |
-| `SERVER_BASE_URL`    | Base URL for the API server (default: http://localhost:8001) | No |
-| `DEEPWIKI_AUTH_MODE` | Set to `true` or `1` to enable authorization mode. | No | Defaults to `false`. If enabled, `DEEPWIKI_AUTH_CODE` is required. |
-| `DEEPWIKI_AUTH_CODE` | The secret code required for wiki generation when `DEEPWIKI_AUTH_MODE` is enabled. | No | Only used if `DEEPWIKI_AUTH_MODE` is `true` or `1`. |
+| Variable | Description | Required | Note |
+|---|---|---|---|
+| **LLM Providers** ||||
+| `GOOGLE_API_KEY` | Google Gemini API key | No | Required for Gemini models and Google embeddings |
+| `OPENAI_API_KEY` | OpenAI API key | Conditional | Required if using OpenAI embeddings or models |
+| `OPENROUTER_API_KEY` | OpenRouter API key | No | Required for OpenRouter models |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI API key | No | Required for Azure OpenAI models |
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint | No | Required for Azure OpenAI models |
+| `AZURE_OPENAI_VERSION` | Azure OpenAI version | No | Required for Azure OpenAI models |
+| `OLLAMA_HOST` | Ollama Host (default: http://localhost:11434) | No | Required for external Ollama server |
+| `DEEPWIKI_EMBEDDER_TYPE` | Embedder: `openai`, `google`, `ollama`, `bedrock` | No | Default: `openai` |
+| **AWS Bedrock** ||||
+| `AWS_ACCESS_KEY_ID` | AWS access key | No | Required for Bedrock without role-based auth |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key | No | Required for Bedrock without role-based auth |
+| `AWS_REGION` | AWS region (default: `us-east-1`) | No | |
+| `AWS_ROLE_ARN` | AWS role ARN to assume | No | If set, uses STS AssumeRole |
+| **GitLab Enterprise** ||||
+| `GITLAB_URL` | GitLab instance URL | No | Required for SSO and enterprise features |
+| `GITLAB_CLIENT_ID` | OAuth2 application ID | No | Required for GitLab SSO |
+| `GITLAB_CLIENT_SECRET` | OAuth2 application secret | No | Required for GitLab SSO |
+| `GITLAB_SERVICE_TOKEN` | Service account token | No | Required for batch indexing and MCP repo access |
+| `JWT_SECRET_KEY` | JWT signing secret | No | Required when SSO is enabled |
+| `ADMIN_USERNAMES` | Comma-separated admin usernames | No | Controls admin dashboard access |
+| `PERMISSION_CACHE_TTL` | Permission cache TTL in seconds | No | Default: 300 |
+| `FRONTEND_ORIGIN` | Frontend URL for OAuth callbacks | No | Default: http://localhost:3000 |
+| **Server** ||||
+| `PORT` | API server port (default: 8001) | No | |
+| `SERVER_BASE_URL` | Backend URL for frontend proxy | No | Default: http://localhost:8001 |
+| `DEEPWIKI_CONFIG_DIR` | Custom config directory | No | Default: `api/config/` |
+| `DEEPWIKI_AUTH_MODE` | Enable auth code mode (`true`/`1`) | No | Simple auth for non-SSO deployments |
+| `DEEPWIKI_AUTH_CODE` | Auth code for wiki generation | No | Only used with `DEEPWIKI_AUTH_MODE` |
 
 **API Key Requirements:**
 - If using `DEEPWIKI_EMBEDDER_TYPE=openai` (default): `OPENAI_API_KEY` is required
@@ -610,6 +651,77 @@ DeepResearch takes repository analysis to the next level with a multi-turn resea
   3. **Final Conclusion**: Provides a comprehensive answer based on all iterations
 
 To use DeepResearch, simply toggle the "Deep Research" switch in the Ask interface before submitting your question.
+
+## 🏢 Enterprise GitLab Integration
+
+DeepWiki supports full enterprise deployment with GitLab as the identity and repository provider.
+
+### GitLab SSO Setup
+
+1. Create an OAuth2 application in GitLab (Admin > Applications):
+   - **Redirect URI**: `http://your-frontend:3000/auth/gitlab/callback`
+   - **Scopes**: `read_user`, `read_api`
+2. Set environment variables:
+   ```bash
+   GITLAB_URL=https://gitlab.example.com
+   GITLAB_CLIENT_ID=your_app_id
+   GITLAB_CLIENT_SECRET=your_app_secret
+   JWT_SECRET_KEY=your_random_secret
+   FRONTEND_ORIGIN=http://your-frontend:3000
+   ADMIN_USERNAMES=admin_user1,admin_user2
+   ```
+3. For batch indexing and MCP server access, create a service account token with `read_api` scope:
+   ```bash
+   GITLAB_SERVICE_TOKEN=glpat-xxxxxxxxxxxx
+   ```
+
+### Admin Dashboard
+
+Accessible at `/admin` for users in `ADMIN_USERNAMES`:
+- **Indexed Projects**: View, reindex, or remove indexed repositories
+- **Batch Indexing**: Select and index multiple GitLab projects at once
+- **Products**: Group repositories into logical products for cross-repo analysis
+- **System Stats**: Cache sizes, indexing status, configuration overview
+
+### Repository Relations
+
+Available at `/admin/relations`:
+- Automated dependency detection via LLM-assisted import scanning
+- Interactive dependency graph (ReactFlow) with group/focus/full view modes
+- Edge filtering and cross-repo dependency visualization
+
+## 🔌 MCP Server Integration
+
+DeepWiki exposes an authenticated [MCP](https://modelcontextprotocol.io/) endpoint at `/mcp`, allowing external AI agents to leverage your indexed codebase.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_products` | List all defined products with their repos |
+| `get_product_overview` | Aggregated overview across all repos in a product |
+| `search_product_code` | Semantic code search across all product repos |
+| `ask_product` | Ask questions across all repos in a product |
+| `list_projects` | List all indexed projects with status |
+| `get_wiki_summary` | Get wiki structure and page titles |
+| `get_wiki_page` | Read full wiki page content |
+| `search_code` | Semantic code search in a single project |
+| `get_repo_relations` | Get dependency relationships |
+| `ask_question` | Ask about a single project's codebase |
+| `get_project_insights` | Get structured knowledge index |
+| `extract_project_insights` | Extract insights via LLM |
+| `get_product_insights` | Aggregated insights across a product |
+
+### Connecting Claude Code
+
+1. Log in to DeepWiki via GitLab SSO
+2. Click the 🔑 icon in the navigation bar to get your MCP token
+3. Run the generated command:
+   ```bash
+   claude mcp add --transport http deepwiki http://your-server:8001/mcp \
+     --header "Authorization: Bearer <your-mcp-token>"
+   ```
+4. Claude Code can now query your indexed codebase
 
 ## Screenshots
 

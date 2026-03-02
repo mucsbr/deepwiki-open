@@ -27,6 +27,17 @@
 - **深度研究**：多轮研究过程，彻底调查复杂主题
 - **多模型提供商**：支持Google Gemini、OpenAI、OpenRouter和本地Ollama模型
 
+### 企业功能
+
+- **GitLab SSO**：基于OAuth2的GitLab单点登录
+- **管理后台**：批量索引、项目管理、系统监控
+- **MCP 服务器**：JWT鉴权的 [Model Context Protocol](https://modelcontextprotocol.io/) 端点——将 Claude Code、Codex 等 MCP 客户端连接到您的代码库
+- **产品管理**：将多个仓库分组为逻辑产品，支持跨仓库分析
+- **仓库依赖关系**：自动化的仓库间依赖关系图可视化
+- **全局问答**：跨所有已索引项目的问答
+- **结构化洞察**：通过 LLM 提取模块、API 端点、数据模型、技术栈
+- **权限系统**：基于 GitLab 的访问控制，内存缓存（项目级 5 分钟，项目列表 24 小时）
+
 ## 🚀 快速开始（超级简单！）
 
 ### 选项1：使用Docker
@@ -153,22 +164,41 @@ graph TD
 
 ```
 deepwiki/
-├── api/                  # 后端API服务器
-│   ├── main.py           # API入口点
-│   ├── api.py            # FastAPI实现
-│   ├── rag.py            # 检索增强生成
-│   ├── data_pipeline.py  # 数据处理工具
-│   └── requirements.txt  # Python依赖
+├── api/                        # 后端API服务器
+│   ├── main.py                 # 入口点（uvicorn）
+│   ├── api.py                  # FastAPI 应用，REST/WebSocket 端点
+│   ├── gitlab_auth.py          # GitLab OAuth2 SSO、JWT、MCP Token
+│   ├── gitlab_permission.py    # 仓库权限检查 + 缓存
+│   ├── admin.py                # 管理API路由
+│   ├── batch_indexer.py        # 后台批量索引
+│   ├── mcp_server.py           # MCP 服务器（JWT鉴权）
+│   ├── metadata_store.py       # 索引元数据存储
+│   ├── product_manager.py      # 产品 CRUD
+│   ├── repo_relations.py       # 仓库依赖分析
+│   ├── insight_extractor.py    # 结构化知识提取
+│   ├── wiki_generator.py       # Wiki 生成核心逻辑
+│   ├── rag.py                  # 单仓库 RAG
+│   ├── multi_rag.py            # 多仓库 RAG
+│   ├── data_pipeline.py        # 仓库克隆、嵌入
+│   ├── config.py               # 配置加载器、环境变量
+│   ├── prompts.py              # LLM 提示词模板
+│   ├── config/                 # JSON 配置文件
+│   └── *_client.py             # LLM 提供商客户端
 │
-├── src/                  # 前端Next.js应用
-│   ├── app/              # Next.js应用目录
-│   │   └── page.tsx      # 主应用页面
-│   └── components/       # React组件
-│       └── Mermaid.tsx   # Mermaid图表渲染器
+├── src/                        # 前端 Next.js 应用
+│   ├── app/
+│   │   ├── page.tsx            # 首页（SSO登录、项目列表）
+│   │   ├── [owner]/[repo]/     # Wiki 查看器
+│   │   ├── admin/              # 管理后台
+│   │   ├── admin/relations/    # 仓库依赖关系图
+│   │   ├── ask/                # 全局问答（跨仓库）
+│   │   └── auth/callback/      # OAuth 回调
+│   ├── components/             # React 组件
+│   └── contexts/               # Auth、Language 上下文
 │
-├── public/               # 静态资源
-├── package.json          # JavaScript依赖
-└── .env                  # 环境变量（需要创建）
+├── public/                     # 静态资源
+├── package.json                # JavaScript 依赖
+└── .env                        # 环境变量（需要创建）
 ```
 
 ## 🤖 提问和深度研究功能
@@ -195,6 +225,77 @@ deepwiki/
   3. **最终结论**：基于所有迭代提供全面答案
 
 要使用深度研究，只需在提交问题前在提问界面中切换"深度研究"开关。
+
+## 🏢 企业 GitLab 集成
+
+DeepWiki 支持以 GitLab 作为身份认证和仓库提供商的完整企业部署。
+
+### GitLab SSO 配置
+
+1. 在 GitLab 中创建 OAuth2 应用（管理 > 应用）：
+   - **回调 URI**：`http://your-frontend:3000/auth/gitlab/callback`
+   - **权限范围**：`read_user`、`read_api`
+2. 设置环境变量：
+   ```bash
+   GITLAB_URL=https://gitlab.example.com
+   GITLAB_CLIENT_ID=your_app_id
+   GITLAB_CLIENT_SECRET=your_app_secret
+   JWT_SECRET_KEY=your_random_secret
+   FRONTEND_ORIGIN=http://your-frontend:3000
+   ADMIN_USERNAMES=admin_user1,admin_user2
+   ```
+3. 批量索引和 MCP 服务器需要服务账号令牌（`read_api` 权限）：
+   ```bash
+   GITLAB_SERVICE_TOKEN=glpat-xxxxxxxxxxxx
+   ```
+
+### 管理后台
+
+`ADMIN_USERNAMES` 中的用户可访问 `/admin`：
+- **已索引项目**：查看、重新索引或移除已索引的仓库
+- **批量索引**：批量选择并索引 GitLab 项目
+- **产品管理**：将仓库分组为逻辑产品，支持跨仓库分析
+- **系统状态**：缓存大小、索引状态、配置概览
+
+### 仓库依赖关系
+
+访问 `/admin/relations`：
+- 通过 LLM 辅助的导入扫描自动检测依赖
+- 交互式依赖图（ReactFlow），支持分组/聚焦/全视图模式
+- 边过滤和跨仓库依赖可视化
+
+## 🔌 MCP 服务器集成
+
+DeepWiki 在 `/mcp` 暴露经过 JWT 鉴权的 [MCP](https://modelcontextprotocol.io/) 端点，允许外部 AI 代理访问已索引的代码库。
+
+### 可用工具
+
+| 工具 | 说明 |
+|------|------|
+| `list_products` | 列出所有已定义的产品及其仓库 |
+| `get_product_overview` | 获取产品跨所有仓库的聚合概览 |
+| `search_product_code` | 跨产品所有仓库的语义代码搜索 |
+| `ask_product` | 跨产品所有仓库提问 |
+| `list_projects` | 列出所有已索引项目及状态 |
+| `get_wiki_summary` | 获取 Wiki 结构和页面标题 |
+| `get_wiki_page` | 读取完整 Wiki 页面内容 |
+| `search_code` | 单项目语义代码搜索 |
+| `get_repo_relations` | 获取依赖关系 |
+| `ask_question` | 针对单个项目提问 |
+| `get_project_insights` | 获取结构化知识索引 |
+| `extract_project_insights` | 通过 LLM 提取洞察 |
+| `get_product_insights` | 跨产品的聚合洞察 |
+
+### 连接 Claude Code
+
+1. 通过 GitLab SSO 登录 DeepWiki
+2. 点击导航栏中的 🔑 图标获取 MCP Token
+3. 运行生成的命令：
+   ```bash
+   claude mcp add --transport http deepwiki http://your-server:8001/mcp \
+     --header "Authorization: Bearer <your-mcp-token>"
+   ```
+4. Claude Code 现在可以查询您已索引的代码库
 
 ## 📱 截图
 
