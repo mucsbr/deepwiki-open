@@ -579,10 +579,11 @@ async def list_accessible_projects(current_user: dict = Depends(get_current_user
     # Get all indexed projects from metadata store
     indexed_projects = get_all_indexed_projects()
 
-    # Bulk-fetch all projects the user can access from GitLab
+    # Bulk-fetch all projects the user can access from GitLab (cached 24h)
     accessible = await get_user_accessible_projects(
         gitlab_token=gitlab_token,
         gitlab_url=GITLAB_URL,
+        user_id=current_user.get("gitlab_user_id"),
     )
     accessible_paths = {p.get("path_with_namespace", "") for p in accessible}
     # Also build a lookup for extra fields (description, avatar)

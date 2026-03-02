@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 _permission_cache: Dict[str, Tuple[bool, float]] = {}
 
+# Cache for get_user_accessible_projects().
+# Key: gitlab_user_id (str), Value: (project_list, timestamp)
+_PROJECT_LIST_CACHE_TTL = 86400  # 24 hours
+_project_list_cache: Dict[str, Tuple[List[dict], float]] = {}
+
 
 def _cache_key(user_id: int, project_path: str) -> str:
     return f"{user_id}:{project_path}"
@@ -57,6 +62,8 @@ def clear_user_cache(user_id: int) -> None:
     keys_to_delete = [k for k in _permission_cache if k.startswith(prefix)]
     for k in keys_to_delete:
         del _permission_cache[k]
+    # Also clear the project-list cache for this user
+    _project_list_cache.pop(str(user_id), None)
 
 
 # ---------------------------------------------------------------------------
@@ -108,15 +115,30 @@ async def check_repo_access(
 async def get_user_accessible_projects(
     gitlab_token: str,
     gitlab_url: str,
+    user_id: int | None = None,
 ) -> List[dict]:
     """
     Return all projects visible to the user's token.
+
+    Results are cached per user_id for 24 hours to avoid repeated
+    paginated API calls on every page load.
 
     No min_access_level filter — that param excludes personal/user-namespace
     projects (e.g. root/) where the user is the owner but has no explicit
     member record. The OAuth token already scopes results to what the user
     can see.
     """
+    # Check cache
+    if user_id is not None:
+        cache_key = str(user_id)
+        entry = _project_list_cache.get(cache_key)
+        if entry is not None:
+            cached_list, ts = entry
+            if time.time() - ts < _PROJECT_LIST_CACHE_TTL:
+                logger.debug("Project list cache hit for user %s (%d projects)", user_id, len(cached_list))
+                return cached_list
+            del _project_list_cache[cache_key]
+
     projects: List[dict] = []
     page = 1
     per_page = 100
@@ -151,6 +173,11 @@ async def get_user_accessible_projects(
             except Exception as exc:
                 logger.error("Error listing projects: %s", exc)
                 break
+
+    # Store in cache
+    if user_id is not None:
+        _project_list_cache[str(user_id)] = (projects, time.time())
+        logger.info("Cached %d projects for user %s", len(projects), user_id)
 
     return projects
 
