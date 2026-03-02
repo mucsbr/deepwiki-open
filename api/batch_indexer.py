@@ -215,6 +215,33 @@ class BatchIndexer:
             logger.warning("Wiki regeneration failed for %s: %s", path_with_ns, exc)
             return False
 
+    async def extract_insights(
+        self,
+        project: dict,
+        on_progress: Optional[Callable[[dict], None]] = None,
+    ) -> bool:
+        """
+        Extract structured insights (modules, endpoints, data models, tech stack)
+        from wiki cache and code RAG for a single project.
+        """
+        path_with_ns = project.get("path_with_namespace", "")
+        logger.info("Extracting insights for project: %s", path_with_ns)
+
+        if on_progress:
+            on_progress({
+                "current_project": path_with_ns,
+                "status": "extracting_insights",
+            })
+
+        try:
+            from api.insight_extractor import extract_project_insights
+            await extract_project_insights(path_with_ns)
+            logger.info("Insights extracted for %s", path_with_ns)
+            return True
+        except Exception as exc:
+            logger.warning("Insight extraction failed for %s: %s", path_with_ns, exc)
+            return False
+
     async def index_project(
         self,
         project: dict,
@@ -222,7 +249,8 @@ class BatchIndexer:
         force: bool = False,
     ) -> bool:
         """
-        Full pipeline: reindex (clone/pull + embedding) then regenerate wiki cache.
+        Full pipeline: reindex (clone/pull + embedding) -> regenerate wiki cache
+        -> extract insights.
 
         This is the original combined behaviour.
         """
@@ -232,7 +260,11 @@ class BatchIndexer:
 
         # --- Generate wiki cache ---
         await self.regenerate_wiki(project, on_progress=on_progress)
-        # Wiki generation failure should not affect overall index status
+
+        # --- Extract structured insights ---
+        await self.extract_insights(project, on_progress=on_progress)
+
+        # Wiki/insight failures should not affect overall index status
         return True
 
     async def fetch_project_by_id(self, project_id: int) -> Optional[dict]:
@@ -308,9 +340,10 @@ class BatchIndexer:
             current += 1
             path = project.get("path_with_namespace", "unknown")
 
-            # For regenerate_wiki we skip the should_reindex check (wiki regen
-            # doesn't depend on code freshness).
-            if operation != "regenerate_wiki" and not force and not self.should_reindex(project):
+            # For regenerate_wiki / extract_insights we skip the should_reindex
+            # check (they don't depend on code freshness).
+            skip_freshness_ops = ("regenerate_wiki", "extract_insights")
+            if operation not in skip_freshness_ops and not force and not self.should_reindex(project):
                 logger.info("Skipping (up-to-date): %s", path)
                 skipped += 1
                 if on_progress:
@@ -328,6 +361,7 @@ class BatchIndexer:
                 "batch_index": "indexing",
                 "reindex": "reindexing",
                 "regenerate_wiki": "generating_wiki",
+                "extract_insights": "extracting_insights",
             }.get(operation, "indexing")
 
             if on_progress:
@@ -354,6 +388,8 @@ class BatchIndexer:
                 success = await self.reindex_project(project, on_progress=_wiki_progress, force=force)
             elif operation == "regenerate_wiki":
                 success = await self.regenerate_wiki(project, on_progress=_wiki_progress)
+            elif operation == "extract_insights":
+                success = await self.extract_insights(project, on_progress=_wiki_progress)
             else:
                 success = await self.index_project(project, on_progress=_wiki_progress, force=force)
 

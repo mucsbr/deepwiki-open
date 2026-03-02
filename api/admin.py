@@ -44,7 +44,7 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 _batch_status: dict = {
     "running": False,
-    "operation": "",  # "reindex" | "regenerate_wiki" | "batch_index"
+    "operation": "",  # "reindex" | "regenerate_wiki" | "batch_index" | "extract_insights"
     "progress": {},
     "last_result": {},
     "last_run": None,
@@ -462,7 +462,7 @@ async def _launch_batch_operation(
     Args:
         body: Request body with group_ids, project_ids, force.
         operation: One of ``"batch_index"``, ``"reindex"``,
-                   ``"regenerate_wiki"``.
+                   ``"regenerate_wiki"``, ``"extract_insights"``.
 
     Returns:
         A dict with a ``message`` key on success.
@@ -532,6 +532,7 @@ async def _launch_batch_operation(
         "batch_index": "Full index",
         "reindex": "Reindex (embedding only)",
         "regenerate_wiki": "Wiki regeneration",
+        "extract_insights": "Insight extraction",
     }
     return {"message": f"{labels.get(operation, operation)} started"}
 
@@ -561,6 +562,15 @@ async def trigger_regenerate_wiki(
 ):
     """Trigger wiki cache regeneration only, relying on existing embeddings."""
     return await _launch_batch_operation(body, operation="regenerate_wiki")
+
+
+@admin_router.post("/extract-insights")
+async def trigger_extract_insights(
+    body: Optional[BatchIndexRequest] = None,
+    _admin: dict = Depends(require_admin),
+):
+    """Trigger insight extraction only, relying on existing wiki cache and embeddings."""
+    return await _launch_batch_operation(body, operation="extract_insights")
 
 
 # ---------------------------------------------------------------------------
