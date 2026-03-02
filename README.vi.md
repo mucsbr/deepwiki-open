@@ -27,6 +27,17 @@
 - **DeepResearch**:Quy trình Deep Research nhiều bước giúp phân tích kỹ lưỡng các chủ đề phức tạp
 - **Hỗ trợ nhiều mô hình**: Hỗ trợ Google Gemini, OpenAI, OpenRouter, và  local Ollama models
 
+### Tính năng Doanh nghiệp
+
+- **GitLab SSO**: Đăng nhập một lần dựa trên OAuth2 với các instance GitLab
+- **Bảng điều khiển Quản trị**: Lập chỉ mục hàng loạt, quản lý dự án, giám sát hệ thống
+- **MCP Server**: Endpoint [Model Context Protocol](https://modelcontextprotocol.io/) xác thực JWT — kết nối Claude Code, Codex hoặc bất kỳ MCP client nào với codebase
+- **Quản lý Sản phẩm**: Nhóm nhiều repository thành sản phẩm logic để phân tích chéo
+- **Quan hệ Repository**: Tự động trực quan hóa đồ thị phụ thuộc giữa các repository
+- **Ask Toàn cầu**: Hỏi đáp chéo trên tất cả dự án đã lập chỉ mục
+- **Insights Cấu trúc**: Trích xuất module, API endpoint, mô hình dữ liệu, tech stack qua LLM
+- **Hệ thống Quyền hạn**: Kiểm soát truy cập dựa trên GitLab với cache bộ nhớ (5 phút mỗi dự án, 24 giờ cho danh sách dự án)
+
 ## 🚀 Bắt đầu (Siêu dễ :))
 
 ### Option 1: Sử dụng Docker
@@ -146,22 +157,41 @@ graph TD
 
 ```
 deepwiki/
-├── api/                  # Backend API server
-│   ├── main.py           # API
-│   ├── api.py            # FastAPI
-│   ├── rag.py            # Retrieval Augmented Generation (RAG)
-│   ├── data_pipeline.py  # Data processing utilities
-│   └── requirements.txt  # Python dependencies
+├── api/                        # Backend API server
+│   ├── main.py                 # Điểm vào (uvicorn)
+│   ├── api.py                  # Ứng dụng FastAPI, endpoint REST/WebSocket
+│   ├── gitlab_auth.py          # GitLab OAuth2 SSO, JWT, MCP Token
+│   ├── gitlab_permission.py    # Kiểm tra quyền truy cập repository + cache
+│   ├── admin.py                # Route API quản trị
+│   ├── batch_indexer.py        # Lập chỉ mục hàng loạt nền
+│   ├── mcp_server.py           # MCP Server (xác thực JWT)
+│   ├── metadata_store.py       # Lưu trữ metadata chỉ mục
+│   ├── product_manager.py      # CRUD sản phẩm
+│   ├── repo_relations.py       # Phân tích phụ thuộc repository
+│   ├── insight_extractor.py    # Trích xuất kiến thức có cấu trúc
+│   ├── wiki_generator.py       # Logic cốt lõi tạo Wiki
+│   ├── rag.py                  # RAG đơn repository
+│   ├── multi_rag.py            # RAG đa repository
+│   ├── data_pipeline.py        # Clone repository, embedding
+│   ├── config.py               # Trình tải cấu hình, biến môi trường
+│   ├── prompts.py              # Template prompt LLM
+│   ├── config/                 # Tệp cấu hình JSON
+│   └── *_client.py             # Client nhà cung cấp LLM
 │
-├── src/                  # Frontend Next.js app
-│   ├── app/              # Next.js app directory
-│   │   └── page.tsx      # Main application page
-│   └── components/       # React components
-│       └── Mermaid.tsx   # Mermaid diagram renderer
+├── src/                        # Frontend Next.js
+│   ├── app/
+│   │   ├── page.tsx            # Trang chủ (SSO đăng nhập, danh sách dự án)
+│   │   ├── [owner]/[repo]/     # Trình xem Wiki
+│   │   ├── admin/              # Bảng điều khiển quản trị
+│   │   ├── admin/relations/    # Đồ thị phụ thuộc repository
+│   │   ├── ask/                # Hỏi đáp toàn cầu (chéo repository)
+│   │   └── auth/callback/      # Callback OAuth
+│   ├── components/             # Các component React
+│   └── contexts/               # Context Auth, Language
 │
-├── public/               # Static assets
-├── package.json          # JavaScript dependencies
-└── .env                  # Environment variables (create this)
+├── public/                     # Tài nguyên tĩnh
+├── package.json                # Phụ thuộc JavaScript
+└── .env                        # Biến môi trường (cần tạo)
 ```
 
 ## 🛠️ Cài đặt nâng cao
@@ -365,6 +395,76 @@ DeepResearch nâng tầm phân tích kho mã với quy trình nghiện cứu nhi
 
 Để sử dụng DeepResearch, chỉ cần bật công tắc "Deep Research" trong giao diện Hỏi (Ask) trước khi gửi câu hỏi của bạn.
 
+## 🏢 Tích hợp GitLab Doanh nghiệp
+
+DeepWiki hỗ trợ triển khai doanh nghiệp đầy đủ với GitLab làm nhà cung cấp xác thực và repository.
+
+### Cấu hình GitLab SSO
+
+1. Tạo ứng dụng OAuth2 trong GitLab (Quản trị > Ứng dụng):
+   - **URI callback**: `http://your-frontend:3000/auth/gitlab/callback`
+   - **Phạm vi quyền**: `read_user`, `read_api`
+2. Thiết lập biến môi trường:
+   ```bash
+   GITLAB_URL=https://gitlab.example.com
+   GITLAB_CLIENT_ID=your_app_id
+   GITLAB_CLIENT_SECRET=your_app_secret
+   JWT_SECRET_KEY=your_random_secret
+   FRONTEND_ORIGIN=http://your-frontend:3000
+   ADMIN_USERNAMES=admin_user1,admin_user2
+   ```
+3. Lập chỉ mục hàng loạt và MCP Server cần token tài khoản dịch vụ (quyền `read_api`):
+   ```bash
+   GITLAB_SERVICE_TOKEN=glpat-xxxxxxxxxxxx
+   ```
+
+### Bảng điều khiển Quản trị
+
+Người dùng trong `ADMIN_USERNAMES` có thể truy cập `/admin`:
+- **Dự án đã lập chỉ mục**: Xem, lập chỉ mục lại hoặc xóa các repository đã lập chỉ mục
+- **Lập chỉ mục hàng loạt**: Chọn và lập chỉ mục hàng loạt các dự án GitLab
+- **Quản lý sản phẩm**: Nhóm các repository thành sản phẩm logic, hỗ trợ phân tích chéo repository
+- **Trạng thái hệ thống**: Kích thước cache, trạng thái chỉ mục, tổng quan cấu hình
+
+### Quan hệ Phụ thuộc Repository
+
+Truy cập `/admin/relations`:
+- Tự động phát hiện phụ thuộc qua quét import được LLM hỗ trợ
+- Đồ thị phụ thuộc tương tác (ReactFlow), hỗ trợ chế độ xem nhóm/tập trung/toàn bộ
+- Lọc cạnh và trực quan hóa phụ thuộc chéo repository
+
+## 🔌 Tích hợp MCP Server
+
+DeepWiki cung cấp endpoint [MCP](https://modelcontextprotocol.io/) được xác thực JWT tại `/mcp`, cho phép các AI agent bên ngoài truy cập codebase đã lập chỉ mục.
+
+### Các công cụ khả dụng
+
+| Công cụ | Mô tả |
+|---------|-------|
+| `list_products` | Liệt kê tất cả sản phẩm đã định nghĩa và repository của chúng |
+| `get_product_overview` | Lấy tổng quan tổng hợp của sản phẩm trên tất cả repository |
+| `search_product_code` | Tìm kiếm code ngữ nghĩa trên tất cả repository của sản phẩm |
+| `ask_product` | Đặt câu hỏi trên tất cả repository của sản phẩm |
+| `list_projects` | Liệt kê tất cả dự án đã lập chỉ mục và trạng thái |
+| `get_wiki_summary` | Lấy cấu trúc Wiki và tiêu đề trang |
+| `get_wiki_page` | Đọc toàn bộ nội dung trang Wiki |
+| `search_code` | Tìm kiếm code ngữ nghĩa trong một dự án |
+| `get_repo_relations` | Lấy quan hệ phụ thuộc |
+| `ask_question` | Đặt câu hỏi cho một dự án đơn lẻ |
+| `get_project_insights` | Lấy chỉ mục kiến thức có cấu trúc |
+| `extract_project_insights` | Trích xuất insights qua LLM |
+| `get_product_insights` | Insights tổng hợp trên toàn sản phẩm |
+
+### Kết nối Claude Code
+
+1. Đăng nhập DeepWiki qua GitLab SSO
+2. Nhấn biểu tượng khóa trong thanh điều hướng để lấy MCP Token
+3. Chạy lệnh được tạo:
+   ```bash
+   claude mcp add --transport http deepwiki http://your-server:8001/mcp \
+     --header "Authorization: Bearer <your-mcp-token>"
+   ```
+4. Claude Code giờ có thể truy vấn codebase đã lập chỉ mục của bạn
 
 ## 📱 Ảnh chụp màng hình
 

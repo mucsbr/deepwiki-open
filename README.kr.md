@@ -27,6 +27,17 @@
 - **DeepResearch**: 복잡한 주제를 철저히 조사하는 다중 턴 연구 프로세스
 - **다양한 모델 제공자 지원**: Google Gemini, OpenAI, OpenRouter, 로컬 Ollama 모델 지원
 
+### 엔터프라이즈 기능
+
+- **GitLab SSO**: GitLab 인스턴스와의 OAuth2 기반 싱글 사인온
+- **관리 대시보드**: 일괄 인덱싱, 프로젝트 관리, 시스템 모니터링
+- **MCP 서버**: JWT 인증 [Model Context Protocol](https://modelcontextprotocol.io/) 엔드포인트 — Claude Code, Codex 등 MCP 클라이언트에서 코드베이스 조회 가능
+- **제품 관리**: 여러 저장소를 논리적 제품으로 그룹화하여 교차 저장소 분석 지원
+- **저장소 관계**: 저장소 간 의존성 그래프 자동 시각화
+- **글로벌 Ask**: 인덱싱된 모든 프로젝트에 대한 교차 저장소 Q&A
+- **구조화된 인사이트**: LLM을 통한 모듈, API 엔드포인트, 데이터 모델, 기술 스택 추출
+- **권한 시스템**: GitLab 기반 접근 제어 (프로젝트별 5분, 프로젝트 목록 24시간 인메모리 캐시)
+
 ## 🚀 빠른 시작 (초간단!)
 
 ### 옵션 1: Docker 사용
@@ -146,22 +157,41 @@ graph TD
 
 ```
 deepwiki/
-├── api/                  # 백엔드 API 서버
-│   ├── main.py           # API 진입점
-│   ├── api.py            # FastAPI 구현
-│   ├── rag.py            # Retrieval Augmented Generation
-│   ├── data_pipeline.py  # 데이터 처리 유틸리티
-│   └── requirements.txt  # Python 의존성
+├── api/                        # 백엔드 API 서버
+│   ├── main.py                 # 진입점 (uvicorn)
+│   ├── api.py                  # FastAPI 앱, REST/WebSocket 엔드포인트
+│   ├── gitlab_auth.py          # GitLab OAuth2 SSO, JWT, MCP 토큰
+│   ├── gitlab_permission.py    # 저장소 권한 검사 + 캐시
+│   ├── admin.py                # 관리 API 라우트
+│   ├── batch_indexer.py        # 백그라운드 일괄 인덱싱
+│   ├── mcp_server.py           # MCP 서버 (JWT 인증)
+│   ├── metadata_store.py       # 인덱스 메타데이터 저장소
+│   ├── product_manager.py      # 제품 CRUD
+│   ├── repo_relations.py       # 저장소 의존성 분석
+│   ├── insight_extractor.py    # 구조화된 지식 추출
+│   ├── wiki_generator.py       # Wiki 생성 핵심 로직
+│   ├── rag.py                  # 단일 저장소 RAG
+│   ├── multi_rag.py            # 다중 저장소 RAG
+│   ├── data_pipeline.py        # 저장소 클론, 임베딩
+│   ├── config.py               # 설정 로더, 환경 변수
+│   ├── prompts.py              # LLM 프롬프트 템플릿
+│   ├── config/                 # JSON 설정 파일
+│   └── *_client.py             # LLM 제공자 클라이언트
 │
-├── src/                  # 프론트엔드 Next.js 앱
-│   ├── app/              # Next.js 앱 디렉토리
-│   │   └── page.tsx      # 메인 애플리케이션 페이지
-│   └── components/       # React 컴포넌트
-│       └── Mermaid.tsx   # Mermaid 다이어그램 렌더러
+├── src/                        # 프론트엔드 Next.js 앱
+│   ├── app/
+│   │   ├── page.tsx            # 홈페이지 (SSO 로그인, 프로젝트 목록)
+│   │   ├── [owner]/[repo]/     # Wiki 뷰어
+│   │   ├── admin/              # 관리 대시보드
+│   │   ├── admin/relations/    # 저장소 의존성 관계 그래프
+│   │   ├── ask/                # 글로벌 Ask (교차 저장소)
+│   │   └── auth/callback/      # OAuth 콜백
+│   ├── components/             # React 컴포넌트
+│   └── contexts/               # Auth, Language 컨텍스트
 │
-├── public/               # 정적 자산
-├── package.json          # JavaScript 의존성
-└── .env                  # 환경 변수 (직접 생성)
+├── public/                     # 정적 자산
+├── package.json                # JavaScript 의존성
+└── .env                        # 환경 변수 (직접 생성)
 ```
 
 ## 🛠️ 고급 설정
@@ -373,6 +403,77 @@ DeepResearch는 다중 턴 연구 프로세스를 통해 저장소 분석을 한
   3. **최종 결론**: 모든 반복을 종합한 포괄적 답변 제공
 
 DeepResearch를 사용하려면 질문 제출 전 Ask 인터페이스에서 "Deep Research" 스위치를 켜세요.
+
+## 🏢 엔터프라이즈 GitLab 통합
+
+DeepWiki는 GitLab을 인증 및 저장소 제공자로 사용하는 완전한 엔터프라이즈 배포를 지원합니다.
+
+### GitLab SSO 설정
+
+1. GitLab에서 OAuth2 애플리케이션 생성 (관리 > 애플리케이션):
+   - **콜백 URI**: `http://your-frontend:3000/auth/gitlab/callback`
+   - **권한 범위**: `read_user`, `read_api`
+2. 환경 변수 설정:
+   ```bash
+   GITLAB_URL=https://gitlab.example.com
+   GITLAB_CLIENT_ID=your_app_id
+   GITLAB_CLIENT_SECRET=your_app_secret
+   JWT_SECRET_KEY=your_random_secret
+   FRONTEND_ORIGIN=http://your-frontend:3000
+   ADMIN_USERNAMES=admin_user1,admin_user2
+   ```
+3. 일괄 인덱싱 및 MCP 서버에는 서비스 계정 토큰이 필요합니다 (`read_api` 권한):
+   ```bash
+   GITLAB_SERVICE_TOKEN=glpat-xxxxxxxxxxxx
+   ```
+
+### 관리 대시보드
+
+`ADMIN_USERNAMES`에 포함된 사용자는 `/admin`에 접근할 수 있습니다:
+- **인덱싱된 프로젝트**: 인덱싱된 저장소 조회, 재인덱싱 또는 삭제
+- **일괄 인덱싱**: GitLab 프로젝트를 일괄 선택하여 인덱싱
+- **제품 관리**: 저장소를 논리적 제품으로 그룹화하여 교차 저장소 분석 지원
+- **시스템 상태**: 캐시 크기, 인덱스 상태, 설정 개요
+
+### 저장소 의존성 관계
+
+`/admin/relations`에서 접근 가능:
+- LLM 보조 임포트 스캔을 통한 의존성 자동 감지
+- 인터랙티브 의존성 그래프 (ReactFlow), 그룹/포커스/전체 보기 모드 지원
+- 엣지 필터링 및 교차 저장소 의존성 시각화
+
+## 🔌 MCP 서버 통합
+
+DeepWiki는 `/mcp`에서 JWT 인증된 [MCP](https://modelcontextprotocol.io/) 엔드포인트를 제공하며, 외부 AI 에이전트가 인덱싱된 코드베이스에 접근할 수 있습니다.
+
+### 사용 가능한 도구
+
+| 도구 | 설명 |
+|------|------|
+| `list_products` | 정의된 모든 제품 및 해당 저장소 목록 |
+| `get_product_overview` | 제품의 모든 저장소에 대한 집계 개요 |
+| `search_product_code` | 제품의 모든 저장소에 대한 시맨틱 코드 검색 |
+| `ask_product` | 제품의 모든 저장소에 대한 질의 |
+| `list_projects` | 모든 인덱싱된 프로젝트 및 상태 목록 |
+| `get_wiki_summary` | Wiki 구조 및 페이지 제목 조회 |
+| `get_wiki_page` | Wiki 페이지 전체 내용 읽기 |
+| `search_code` | 단일 프로젝트 시맨틱 코드 검색 |
+| `get_repo_relations` | 의존성 관계 조회 |
+| `ask_question` | 단일 프로젝트에 대한 질의 |
+| `get_project_insights` | 구조화된 지식 인덱스 조회 |
+| `extract_project_insights` | LLM을 통한 인사이트 추출 |
+| `get_product_insights` | 제품 전체의 집계 인사이트 |
+
+### Claude Code 연결
+
+1. GitLab SSO를 통해 DeepWiki에 로그인
+2. 내비게이션 바의 🔑 아이콘을 클릭하여 MCP 토큰 획득
+3. 생성된 명령어 실행:
+   ```bash
+   claude mcp add --transport http deepwiki http://your-server:8001/mcp \
+     --header "Authorization: Bearer <your-mcp-token>"
+   ```
+4. 이제 Claude Code에서 인덱싱된 코드베이스를 조회할 수 있습니다
 
 ## 📱 스크린샷
 

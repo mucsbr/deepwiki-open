@@ -27,6 +27,17 @@
 - **詳細調査**: 複雑なトピックを徹底的に調査する多段階研究プロセス
 - **複数のモデルプロバイダー**: Google Gemini、OpenAI、OpenRouter、およびローカル Ollama モデルのサポート
 
+### エンタープライズ機能
+
+- **GitLab SSO**：GitLabインスタンスとのOAuth2ベースのシングルサインオン
+- **管理ダッシュボード**：一括インデックス、プロジェクト管理、システム監視
+- **MCPサーバー**：JWT認証付き [Model Context Protocol](https://modelcontextprotocol.io/) エンドポイント — Claude Code、Codexなどのあらゆる MCP クライアントからコードベースを検索可能
+- **プロダクト管理**：複数のリポジトリを論理的なプロダクトにグループ化し、クロスリポ分析を実現
+- **リポジトリ依存関係**：リポジトリ間の依存関係グラフの自動可視化
+- **グローバルAsk**：インデックス済み全プロジェクトに対するクロスリポQ&A
+- **構造化インサイト**：LLMによるモジュール、APIエンドポイント、データモデル、技術スタックの抽出
+- **権限システム**：GitLabベースのアクセス制御（プロジェクト単位5分、プロジェクトリスト24時間のインメモリキャッシュ）
+
 ## 🚀 クイックスタート（超簡単！）
 
 ### オプション 1: Docker を使用
@@ -155,22 +166,41 @@ graph TD
 
 ```
 deepwiki/
-├── api/                  # バックエンドAPIサーバー
-│   ├── main.py           # APIエントリーポイント
-│   ├── api.py            # FastAPI実装
-│   ├── rag.py            # 検索拡張生成
-│   ├── data_pipeline.py  # データ処理ユーティリティ
-│   └── requirements.txt  # Python依存関係
+├── api/                        # バックエンドAPIサーバー
+│   ├── main.py                 # エントリポイント（uvicorn）
+│   ├── api.py                  # FastAPIアプリ、REST/WebSocketエンドポイント
+│   ├── gitlab_auth.py          # GitLab OAuth2 SSO、JWT、MCPトークン
+│   ├── gitlab_permission.py    # リポジトリ権限チェック + キャッシュ
+│   ├── admin.py                # 管理APIルート
+│   ├── batch_indexer.py        # バックグラウンド一括インデックス
+│   ├── mcp_server.py           # MCPサーバー（JWT認証）
+│   ├── metadata_store.py       # インデックスメタデータストア
+│   ├── product_manager.py      # プロダクトCRUD
+│   ├── repo_relations.py       # リポジトリ依存分析
+│   ├── insight_extractor.py    # 構造化知識抽出
+│   ├── wiki_generator.py       # Wiki生成コアロジック
+│   ├── rag.py                  # シングルリポRAG
+│   ├── multi_rag.py            # マルチリポRAG
+│   ├── data_pipeline.py        # リポクローン、エンベディング
+│   ├── config.py               # 設定ローダー、環境変数
+│   ├── prompts.py              # LLMプロンプトテンプレート
+│   ├── config/                 # JSON設定ファイル
+│   └── *_client.py             # LLMプロバイダクライアント
 │
-├── src/                  # フロントエンドNext.jsアプリ
-│   ├── app/              # Next.jsアプリディレクトリ
-│   │   └── page.tsx      # メインアプリケーションページ
-│   └── components/       # Reactコンポーネント
-│       └── Mermaid.tsx   # Mermaid図レンダラー
+├── src/                        # フロントエンドNext.jsアプリ
+│   ├── app/
+│   │   ├── page.tsx            # ホーム（SSOログイン、プロジェクトリスト）
+│   │   ├── [owner]/[repo]/     # Wikiビューア
+│   │   ├── admin/              # 管理ダッシュボード
+│   │   ├── admin/relations/    # リポジトリ依存関係グラフ
+│   │   ├── ask/                # グローバルAsk（クロスリポQ&A）
+│   │   └── auth/callback/      # OAuthコールバック
+│   ├── components/             # Reactコンポーネント
+│   └── contexts/               # Auth、Languageコンテキスト
 │
-├── public/               # 静的アセット
-├── package.json          # JavaScript依存関係
-└── .env                  # 環境変数（作成する必要あり）
+├── public/                     # 静的アセット
+├── package.json                # JavaScript依存関係
+└── .env                        # 環境変数（要作成）
 ```
 
 ## 🛠️ 高度な設定
@@ -385,6 +415,77 @@ OpenRouter は特に以下のような場合に便利です：
   3. **最終結論**: すべての反復に基づく包括的な回答を提供
 
 詳細調査を使用するには、質問を送信する前に質問インターフェースの「詳細調査」スイッチをオンにするだけです。
+
+## 🏢 エンタープライズ GitLab 統合
+
+DeepWikiはGitLabをIDプロバイダおよびリポジトリプロバイダとしたエンタープライズデプロイメントをサポートします。
+
+### GitLab SSO セットアップ
+
+1. GitLabでOAuth2アプリケーションを作成（管理 > アプリケーション）：
+   - **リダイレクトURI**：`http://your-frontend:3000/auth/gitlab/callback`
+   - **スコープ**：`read_user`、`read_api`
+2. 環境変数を設定：
+   ```bash
+   GITLAB_URL=https://gitlab.example.com
+   GITLAB_CLIENT_ID=your_app_id
+   GITLAB_CLIENT_SECRET=your_app_secret
+   JWT_SECRET_KEY=your_random_secret
+   FRONTEND_ORIGIN=http://your-frontend:3000
+   ADMIN_USERNAMES=admin_user1,admin_user2
+   ```
+3. 一括インデックスとMCPサーバー用に、`read_api`スコープのサービスアカウントトークンを作成：
+   ```bash
+   GITLAB_SERVICE_TOKEN=glpat-xxxxxxxxxxxx
+   ```
+
+### 管理ダッシュボード
+
+`ADMIN_USERNAMES`のユーザーは`/admin`にアクセス可能：
+- **インデックス済みプロジェクト**：インデックス済みリポジトリの表示、再インデックス、削除
+- **一括インデックス**：複数のGitLabプロジェクトを一括で選択・インデックス
+- **プロダクト管理**：リポジトリを論理的なプロダクトにグループ化し、クロスリポ分析を実現
+- **システム状態**：キャッシュサイズ、インデックスステータス、設定概要
+
+### リポジトリ依存関係
+
+`/admin/relations`でアクセス可能：
+- LLMアシストによるインポートスキャンで依存関係を自動検出
+- インタラクティブな依存関係グラフ（ReactFlow）、グループ/フォーカス/フルビューモード
+- エッジフィルタリングとクロスリポ依存関係の可視化
+
+## 🔌 MCPサーバー統合
+
+DeepWikiは`/mcp`にJWT認証済みの[MCP](https://modelcontextprotocol.io/)エンドポイントを公開し、外部AIエージェントがインデックス済みコードベースを活用できるようにします。
+
+### 利用可能なツール
+
+| ツール | 説明 |
+|------|------|
+| `list_products` | 定義済みプロダクトとそのリポジトリを一覧表示 |
+| `get_product_overview` | プロダクト内全リポジトリの集約概要 |
+| `search_product_code` | プロダクト全リポジトリにわたるセマンティックコード検索 |
+| `ask_product` | プロダクト全リポジトリに対する質問 |
+| `list_projects` | インデックス済み全プロジェクトとステータスの一覧 |
+| `get_wiki_summary` | Wiki構造とページタイトルの取得 |
+| `get_wiki_page` | Wikiページの全コンテンツを読み取り |
+| `search_code` | 単一プロジェクトのセマンティックコード検索 |
+| `get_repo_relations` | 依存関係の取得 |
+| `ask_question` | 単一プロジェクトのコードベースへの質問 |
+| `get_project_insights` | 構造化知識インデックスの取得 |
+| `extract_project_insights` | LLMによるインサイト抽出 |
+| `get_product_insights` | プロダクト全体の集約インサイト |
+
+### Claude Code との接続
+
+1. GitLab SSO経由でDeepWikiにログイン
+2. ナビゲーションバーの🔑アイコンをクリックしてMCPトークンを取得
+3. 生成されたコマンドを実行：
+   ```bash
+   claude mcp add --transport http deepwiki http://your-server:8001/mcp \
+     --header "Authorization: Bearer <your-mcp-token>"
+   ```
+4. Claude Codeからインデックス済みコードベースのクエリが可能に
 
 ## 📱 スクリーンショット
 

@@ -27,6 +27,17 @@
 - **深度研究**：多輪研究過程，徹底調查複雜主題
 - **多模型提供商**：支援 Google Gemini、OpenAI、OpenRouter 和本機 Ollama 模型
 
+### 企業功能
+
+- **GitLab SSO**：基於 OAuth2 的 GitLab 單點登入
+- **管理後台**：批次索引、專案管理、系統監控
+- **MCP 伺服器**：JWT 驗證的 [Model Context Protocol](https://modelcontextprotocol.io/) 端點——將 Claude Code、Codex 等 MCP 客戶端連接到您的程式碼庫
+- **產品管理**：將多個儲存庫分組為邏輯產品，支援跨儲存庫分析
+- **儲存庫依賴關係**：自動化的儲存庫間依賴關係圖視覺化
+- **全域問答**：跨所有已索引專案的問答
+- **結構化洞察**：透過 LLM 提取模組、API 端點、資料模型、技術棧
+- **權限系統**：基於 GitLab 的存取控制，記憶體快取（專案級 5 分鐘，專案清單 24 小時）
+
 ## 🚀 快速開始（超級簡單！）
 
 ### 選項 1：使用 Docker
@@ -159,22 +170,41 @@ graph TD
 
 ```
 deepwiki/
-├── api/                  # 後端 API 伺服器
-│   ├── main.py           # API 進入點
-│   ├── api.py            # FastAPI 實作
-│   ├── rag.py            # 檢索增強產生
-│   ├── data_pipeline.py  # 資料處理工具
-│   └── requirements.txt  # Python 相依性
+├── api/                        # 後端 API 伺服器
+│   ├── main.py                 # 進入點（uvicorn）
+│   ├── api.py                  # FastAPI 應用，REST/WebSocket 端點
+│   ├── gitlab_auth.py          # GitLab OAuth2 SSO、JWT、MCP Token
+│   ├── gitlab_permission.py    # 儲存庫權限檢查 + 快取
+│   ├── admin.py                # 管理 API 路由
+│   ├── batch_indexer.py        # 背景批次索引
+│   ├── mcp_server.py           # MCP 伺服器（JWT 驗證）
+│   ├── metadata_store.py       # 索引中繼資料儲存
+│   ├── product_manager.py      # 產品 CRUD
+│   ├── repo_relations.py       # 儲存庫依賴分析
+│   ├── insight_extractor.py    # 結構化知識提取
+│   ├── wiki_generator.py       # Wiki 產生核心邏輯
+│   ├── rag.py                  # 單儲存庫 RAG
+│   ├── multi_rag.py            # 多儲存庫 RAG
+│   ├── data_pipeline.py        # 儲存庫複製、嵌入
+│   ├── config.py               # 設定載入器、環境變數
+│   ├── prompts.py              # LLM 提示詞範本
+│   ├── config/                 # JSON 設定檔
+│   └── *_client.py             # LLM 提供商客戶端
 │
-├── src/                  # 前端 Next.js 應用
-│   ├── app/              # Next.js 應用目錄
-│   │   └── page.tsx      # 主應用頁面
-│   └── components/       # React 元件
-│       └── Mermaid.tsx   # Mermaid 圖表渲染器
+├── src/                        # 前端 Next.js 應用
+│   ├── app/
+│   │   ├── page.tsx            # 首頁（SSO 登入、專案列表）
+│   │   ├── [owner]/[repo]/     # Wiki 檢視器
+│   │   ├── admin/              # 管理後台
+│   │   ├── admin/relations/    # 儲存庫依賴關係圖
+│   │   ├── ask/                # 全域問答（跨儲存庫）
+│   │   └── auth/callback/      # OAuth 回呼
+│   ├── components/             # React 元件
+│   └── contexts/               # Auth、Language 上下文
 │
-├── public/               # 靜態資源
-├── package.json          # JavaScript 相依性
-└── .env                  # 環境變數（需要建立）
+├── public/                     # 靜態資源
+├── package.json                # JavaScript 相依性
+└── .env                        # 環境變數（需要建立）
 ```
 
 ## 🤖 基於提供商的模型選擇系統
@@ -462,6 +492,77 @@ OpenRouter 特別適用於以下情況：
   3. **最終結論**：基於所有迭代提供全面答案
 
 要使用深度研究，只需在提交問題前在提問介面中切換「深度研究」開關。
+
+## 🏢 企業 GitLab 整合
+
+DeepWiki 支援以 GitLab 作為身份驗證和儲存庫提供商的完整企業部署。
+
+### GitLab SSO 設定
+
+1. 在 GitLab 中建立 OAuth2 應用（管理 > 應用）：
+   - **回呼 URI**：`http://your-frontend:3000/auth/gitlab/callback`
+   - **權限範圍**：`read_user`、`read_api`
+2. 設定環境變數：
+   ```bash
+   GITLAB_URL=https://gitlab.example.com
+   GITLAB_CLIENT_ID=your_app_id
+   GITLAB_CLIENT_SECRET=your_app_secret
+   JWT_SECRET_KEY=your_random_secret
+   FRONTEND_ORIGIN=http://your-frontend:3000
+   ADMIN_USERNAMES=admin_user1,admin_user2
+   ```
+3. 批次索引和 MCP 伺服器需要服務帳號令牌（`read_api` 權限）：
+   ```bash
+   GITLAB_SERVICE_TOKEN=glpat-xxxxxxxxxxxx
+   ```
+
+### 管理後台
+
+`ADMIN_USERNAMES` 中的使用者可存取 `/admin`：
+- **已索引專案**：檢視、重新索引或移除已索引的儲存庫
+- **批次索引**：批次選擇並索引 GitLab 專案
+- **產品管理**：將儲存庫分組為邏輯產品，支援跨儲存庫分析
+- **系統狀態**：快取大小、索引狀態、設定概覽
+
+### 儲存庫依賴關係
+
+存取 `/admin/relations`：
+- 透過 LLM 輔助的匯入掃描自動偵測依賴
+- 互動式依賴圖（ReactFlow），支援分組/聚焦/全視圖模式
+- 邊過濾和跨儲存庫依賴視覺化
+
+## 🔌 MCP 伺服器整合
+
+DeepWiki 在 `/mcp` 暴露經過 JWT 驗證的 [MCP](https://modelcontextprotocol.io/) 端點，允許外部 AI 代理存取已索引的程式碼庫。
+
+### 可用工具
+
+| 工具 | 說明 |
+|------|------|
+| `list_products` | 列出所有已定義的產品及其儲存庫 |
+| `get_product_overview` | 取得產品跨所有儲存庫的彙總概覽 |
+| `search_product_code` | 跨產品所有儲存庫的語義程式碼搜尋 |
+| `ask_product` | 跨產品所有儲存庫提問 |
+| `list_projects` | 列出所有已索引專案及狀態 |
+| `get_wiki_summary` | 取得 Wiki 結構和頁面標題 |
+| `get_wiki_page` | 讀取完整 Wiki 頁面內容 |
+| `search_code` | 單專案語義程式碼搜尋 |
+| `get_repo_relations` | 取得依賴關係 |
+| `ask_question` | 針對單個專案提問 |
+| `get_project_insights` | 取得結構化知識索引 |
+| `extract_project_insights` | 透過 LLM 提取洞察 |
+| `get_product_insights` | 跨產品的彙總洞察 |
+
+### 連接 Claude Code
+
+1. 透過 GitLab SSO 登入 DeepWiki
+2. 點擊導覽列中的 🔑 圖示取得 MCP Token
+3. 執行產生的命令：
+   ```bash
+   claude mcp add --transport http deepwiki http://your-server:8001/mcp \
+     --header "Authorization: Bearer <your-mcp-token>"
+   ```
+4. Claude Code 現在可以查詢您已索引的程式碼庫
 
 ## 📱 螢幕截圖
 

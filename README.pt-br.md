@@ -27,6 +27,17 @@
 - **DeepResearch**: Processo de pesquisa em várias etapas que investiga minuciosamente tópicos complexos
 - **Múltiplos Provedores de Modelos**: Suporte para Google Gemini, OpenAI, OpenRouter e modelos locais Ollama
 
+### Recursos Empresariais
+
+- **GitLab SSO**: Login único baseado em OAuth2 com instâncias GitLab
+- **Painel Administrativo**: Indexação em lote, gerenciamento de projetos, monitoramento do sistema
+- **Servidor MCP**: Endpoint [Model Context Protocol](https://modelcontextprotocol.io/) autenticado com JWT — conecte Claude Code, Codex ou qualquer cliente MCP ao seu código
+- **Gestão de Produtos**: Agrupe múltiplos repositórios em produtos lógicos para análise cruzada
+- **Relações entre Repositórios**: Visualização automática do grafo de dependências
+- **Ask Global**: Perguntas e respostas entre todos os projetos indexados
+- **Insights Estruturados**: Extração de módulos, endpoints API, modelos de dados e stack tecnológico via LLM
+- **Sistema de Permissões**: Controle de acesso baseado no GitLab com cache em memória (5 min por projeto, 24h para lista de projetos)
+
 ## 🚀 Início Rápido (Super Fácil!)
 
 ### Opção 1: Usando Docker
@@ -152,22 +163,41 @@ graph TD
 
 ```
 deepwiki/
-├── api/                  # Servidor API backend
-│   ├── main.py           # Ponto de entrada da API
-│   ├── api.py            # Implementação FastAPI
-│   ├── rag.py            # Retrieval Augmented Generation
-│   ├── data_pipeline.py  # Utilitários de processamento de dados
-│   └── requirements.txt  # Dependências Python
+├── api/                        # Servidor API backend
+│   ├── main.py                 # Ponto de entrada (uvicorn)
+│   ├── api.py                  # App FastAPI, endpoints REST/WebSocket
+│   ├── gitlab_auth.py          # GitLab OAuth2 SSO, JWT, MCP Token
+│   ├── gitlab_permission.py    # Verificação de permissões de repositório + cache
+│   ├── admin.py                # Rotas da API de administração
+│   ├── batch_indexer.py        # Indexação em lote em segundo plano
+│   ├── mcp_server.py           # Servidor MCP (autenticação JWT)
+│   ├── metadata_store.py       # Armazenamento de metadados de índice
+│   ├── product_manager.py      # CRUD de Produtos
+│   ├── repo_relations.py       # Análise de dependências entre repositórios
+│   ├── insight_extractor.py    # Extração de conhecimento estruturado
+│   ├── wiki_generator.py       # Lógica principal de geração de Wiki
+│   ├── rag.py                  # RAG de repositório único
+│   ├── multi_rag.py            # RAG multi-repositório
+│   ├── data_pipeline.py        # Clonagem de repositório, embeddings
+│   ├── config.py               # Carregador de configuração, variáveis de ambiente
+│   ├── prompts.py              # Templates de prompts LLM
+│   ├── config/                 # Arquivos de configuração JSON
+│   └── *_client.py             # Clientes de provedores LLM
 │
-├── src/                  # Aplicativo Next.js frontend
-│   ├── app/              # Diretório do aplicativo Next.js
-│   │   └── page.tsx      # Página principal do aplicativo
-│   └── components/       # Componentes React
-│       └── Mermaid.tsx   # Renderizador de diagramas Mermaid
+├── src/                        # Aplicativo Next.js frontend
+│   ├── app/
+│   │   ├── page.tsx            # Página inicial (login SSO, lista de projetos)
+│   │   ├── [owner]/[repo]/     # Visualizador de Wiki
+│   │   ├── admin/              # Painel administrativo
+│   │   ├── admin/relations/    # Grafo de dependências entre repositórios
+│   │   ├── ask/                # Ask Global (cross-repositório)
+│   │   └── auth/callback/      # Callback OAuth
+│   ├── components/             # Componentes React
+│   └── contexts/               # Contextos Auth, Language
 │
-├── public/               # Ativos estáticos
-├── package.json          # Dependências JavaScript
-└── .env                  # Variáveis de ambiente (crie este arquivo)
+├── public/                     # Ativos estáticos
+├── package.json                # Dependências JavaScript
+└── .env                        # Variáveis de ambiente (crie este arquivo)
 ```
 
 ## 🤖 Sistema de Seleção de Modelos Baseado em Provedores
@@ -454,6 +484,77 @@ O DeepResearch leva a análise de repositórios a um novo nível com um processo
   3. **Conclusão Final**: Fornece uma resposta abrangente baseada em todas as iterações
 
 Para usar o DeepResearch, simplesmente alterne o interruptor "Pesquisa Aprofundada" na interface de Perguntas antes de enviar sua pergunta.
+
+## 🏢 Integração GitLab Empresarial
+
+O DeepWiki suporta implantação empresarial completa com GitLab como provedor de autenticação e repositórios.
+
+### Configuração do GitLab SSO
+
+1. Crie uma aplicação OAuth2 no GitLab (Admin > Aplicações):
+   - **URI de callback**: `http://seu-frontend:3000/auth/gitlab/callback`
+   - **Escopos**: `read_user`, `read_api`
+2. Defina as variáveis de ambiente:
+   ```bash
+   GITLAB_URL=https://gitlab.exemplo.com
+   GITLAB_CLIENT_ID=id_da_sua_aplicacao
+   GITLAB_CLIENT_SECRET=segredo_da_sua_aplicacao
+   JWT_SECRET_KEY=seu_segredo_aleatorio
+   FRONTEND_ORIGIN=http://seu-frontend:3000
+   ADMIN_USERNAMES=usuario_admin1,usuario_admin2
+   ```
+3. A indexação em lote e o servidor MCP requerem um token de conta de serviço (permissão `read_api`):
+   ```bash
+   GITLAB_SERVICE_TOKEN=glpat-xxxxxxxxxxxx
+   ```
+
+### Painel Administrativo
+
+Usuários listados em `ADMIN_USERNAMES` podem acessar `/admin`:
+- **Projetos Indexados**: Visualizar, reindexar ou remover repositórios indexados
+- **Indexação em Lote**: Selecionar e indexar projetos do GitLab em massa
+- **Gestão de Produtos**: Agrupar repositórios em produtos lógicos, com suporte a análise cruzada
+- **Status do Sistema**: Tamanho do cache, status da indexação, visão geral da configuração
+
+### Relações entre Repositórios
+
+Acesse `/admin/relations`:
+- Detecção automática de dependências por varredura de importações assistida por LLM
+- Grafo de dependências interativo (ReactFlow) com modos de visualização por grupo/foco/completo
+- Filtragem de arestas e visualização de dependências entre repositórios
+
+## 🔌 Integração do Servidor MCP
+
+O DeepWiki expõe um endpoint [MCP](https://modelcontextprotocol.io/) autenticado por JWT em `/mcp`, permitindo que agentes de IA externos acessem as bases de código indexadas.
+
+### Ferramentas Disponíveis
+
+| Ferramenta | Descrição |
+|------------|-----------|
+| `list_products` | Lista todos os produtos definidos e seus repositórios |
+| `get_product_overview` | Obtém visão geral agregada do produto em todos os repositórios |
+| `search_product_code` | Busca semântica de código em todos os repositórios do produto |
+| `ask_product` | Faz perguntas em todos os repositórios do produto |
+| `list_projects` | Lista todos os projetos indexados e seus status |
+| `get_wiki_summary` | Obtém a estrutura da Wiki e títulos das páginas |
+| `get_wiki_page` | Lê o conteúdo completo de uma página da Wiki |
+| `search_code` | Busca semântica de código em um único projeto |
+| `get_repo_relations` | Obtém relações de dependência |
+| `ask_question` | Faz perguntas sobre um único projeto |
+| `get_project_insights` | Obtém o índice de conhecimento estruturado |
+| `extract_project_insights` | Extrai insights via LLM |
+| `get_product_insights` | Insights agregados de todo o produto |
+
+### Conectando o Claude Code
+
+1. Faça login no DeepWiki via GitLab SSO
+2. Clique no ícone 🔑 na barra de navegação para obter o MCP Token
+3. Execute o comando gerado:
+   ```bash
+   claude mcp add --transport http deepwiki http://seu-servidor:8001/mcp \
+     --header "Authorization: Bearer <seu-mcp-token>"
+   ```
+4. O Claude Code agora pode consultar suas bases de código indexadas
 
 ## 📱 Capturas de Tela
 
