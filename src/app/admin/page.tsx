@@ -14,8 +14,6 @@ import {
   FaPlay,
   FaSearch,
   FaFilter,
-  FaChevronRight,
-  FaChevronDown,
   FaRedo,
   FaBookOpen,
   FaProjectDiagram,
@@ -72,13 +70,6 @@ interface SystemConfig {
   batch_groups: string;
   permission_cache_ttl: number;
   admin_usernames: string[];
-}
-
-interface GitLabGroup {
-  id: number;
-  name: string;
-  full_path: string;
-  description: string;
 }
 
 interface GroupProject {
@@ -141,19 +132,17 @@ export default function AdminPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
 
-  // Batch index selection states
-  const [groups, setGroups] = useState<GitLabGroup[]>([]);
-  const [expandedGroups, setExpandedGroups] = useState<Set<number>>(new Set());
-  const [groupProjects, setGroupProjects] = useState<Record<number, GroupProject[]>>({});
-  const [loadingGroups, setLoadingGroups] = useState<Set<number>>(new Set());
-  const [selectedGroups, setSelectedGroups] = useState<Set<number>>(new Set());
+  // Batch index: all visible projects
+  const [allVisibleProjects, setAllVisibleProjects] = useState<GroupProject[]>([]);
+  const [allProjectsLoading, setAllProjectsLoading] = useState(false);
+  const [allProjectsPage, setAllProjectsPage] = useState(1);
+  const [allProjectsTotal, setAllProjectsTotal] = useState(0);
   const [selectedProjects, setSelectedProjects] = useState<Set<number>>(new Set());
   const [forceReindex, setForceReindex] = useState(false);
 
-  // Project search states
+  // Batch index: search filter
   const [projectSearch, setProjectSearch] = useState('');
-  const [searchResults, setSearchResults] = useState<GroupProject[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
+  const [projectSearchDebounced, setProjectSearchDebounced] = useState('');
 
   // ---------------------------------------------------------------------------
   // Data fetching
@@ -168,12 +157,11 @@ export default function AdminPage() {
     if (!token) return;
     setLoading(true);
     try {
-      const [statsRes, projectsRes, configRes, batchRes, groupsRes, productsRes] = await Promise.all([
+      const [statsRes, projectsRes, configRes, batchRes, productsRes] = await Promise.all([
         fetch('/api/admin/stats', { headers }),
         fetch('/api/admin/projects', { headers }),
         fetch('/api/admin/config', { headers }),
         fetch('/api/admin/batch-index/status', { headers }),
-        fetch('/api/admin/groups', { headers }),
         fetch('/api/admin/products', { headers }),
       ]);
 
@@ -181,7 +169,6 @@ export default function AdminPage() {
       if (projectsRes.ok) setProjects(await projectsRes.json());
       if (configRes.ok) setConfig(await configRes.json());
       if (batchRes.ok) setBatchStatus(await batchRes.json());
-      if (groupsRes.ok) setGroups(await groupsRes.json());
       if (productsRes.ok) setProducts(await productsRes.json());
     } catch (err) {
       console.error('Failed to fetch admin data:', err);
@@ -265,128 +252,77 @@ export default function AdminPage() {
   // Group / project selection logic
   // ---------------------------------------------------------------------------
 
-  const handleProjectSearch = useCallback(async () => {
-    if (!projectSearch.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    setSearchLoading(true);
+  // Fetch all visible projects (paginated, with optional search)
+  const fetchAllVisibleProjects = useCallback(async (page: number = 1, search: string = '') => {
+    if (!token) return;
+    setAllProjectsLoading(true);
     try {
-      const res = await fetch(
-        `/api/admin/projects/search?q=${encodeURIComponent(projectSearch.trim())}`,
-        { headers }
-      );
+      const params = new URLSearchParams({ page: String(page), per_page: '50' });
+      if (search.trim()) params.set('q', search.trim());
+      const res = await fetch(`/api/admin/all-projects?${params}`, { headers });
       if (res.ok) {
-        setSearchResults(await res.json());
+        const data = await res.json();
+        if (page === 1) {
+          setAllVisibleProjects(data.projects);
+        } else {
+          setAllVisibleProjects((prev) => [...prev, ...data.projects]);
+        }
+        setAllProjectsTotal(data.total);
+        setAllProjectsPage(page);
       }
     } catch (err) {
-      console.error('Project search error:', err);
+      console.error('Failed to fetch all visible projects:', err);
     } finally {
-      setSearchLoading(false);
+      setAllProjectsLoading(false);
     }
-  }, [projectSearch, headers]);
+  }, [token, headers]);
 
-  const toggleGroupExpand = async (groupId: number) => {
-    const next = new Set(expandedGroups);
-    if (next.has(groupId)) {
-      next.delete(groupId);
-    } else {
-      next.add(groupId);
-      // Fetch projects for this group if not already loaded
-      if (!groupProjects[groupId]) {
-        setLoadingGroups((prev) => new Set(prev).add(groupId));
-        try {
-          const res = await fetch(`/api/admin/groups/${groupId}/projects`, { headers });
-          if (res.ok) {
-            const data: GroupProject[] = await res.json();
-            setGroupProjects((prev) => ({ ...prev, [groupId]: data }));
-          }
-        } catch (err) {
-          console.error(`Failed to fetch projects for group ${groupId}:`, err);
-        } finally {
-          setLoadingGroups((prev) => {
-            const s = new Set(prev);
-            s.delete(groupId);
-            return s;
-          });
-        }
-      }
+  // Debounce search input
+  useEffect(() => {
+    const timer = setTimeout(() => setProjectSearchDebounced(projectSearch), 300);
+    return () => clearTimeout(timer);
+  }, [projectSearch]);
+
+  // Fetch when debounced search changes or tab becomes active
+  useEffect(() => {
+    if (activeTab === 'batch') {
+      fetchAllVisibleProjects(1, projectSearchDebounced);
     }
-    setExpandedGroups(next);
-  };
+  }, [activeTab, projectSearchDebounced, fetchAllVisibleProjects]);
 
-  const toggleGroupSelect = (groupId: number) => {
-    const next = new Set(selectedGroups);
-    if (next.has(groupId)) {
-      next.delete(groupId);
-      // Also deselect all projects in this group
-      const gProjects = groupProjects[groupId] || [];
-      const nextProjects = new Set(selectedProjects);
-      gProjects.forEach((p) => nextProjects.delete(p.id));
-      setSelectedProjects(nextProjects);
-    } else {
-      next.add(groupId);
-      // Also select all projects in this group (if loaded)
-      const gProjects = groupProjects[groupId] || [];
-      const nextProjects = new Set(selectedProjects);
-      gProjects.forEach((p) => nextProjects.add(p.id));
-      setSelectedProjects(nextProjects);
-    }
-    setSelectedGroups(next);
-  };
-
-  const toggleProjectSelect = (projectId: number, groupId: number) => {
+  const toggleProjectSelect = (projectId: number) => {
     const nextProjects = new Set(selectedProjects);
     if (nextProjects.has(projectId)) {
       nextProjects.delete(projectId);
-      // If group was selected, deselect it (partial selection)
-      const nextGroups = new Set(selectedGroups);
-      nextGroups.delete(groupId);
-      setSelectedGroups(nextGroups);
     } else {
       nextProjects.add(projectId);
-      // Check if all projects in this group are now selected
-      const gProjects = groupProjects[groupId] || [];
-      const allSelected = gProjects.every((p) => nextProjects.has(p.id));
-      if (allSelected && gProjects.length > 0) {
-        setSelectedGroups((prev) => new Set(prev).add(groupId));
-      }
     }
     setSelectedProjects(nextProjects);
   };
 
-  // Count total selected items
-  const selectedCount = useMemo(() => {
-    // For fully selected groups, count their projects
-    // For individually selected projects not in a selected group, count those too
-    const projectsInSelectedGroups = new Set<number>();
-    selectedGroups.forEach((gid) => {
-      (groupProjects[gid] || []).forEach((p) => projectsInSelectedGroups.add(p.id));
-    });
-    // Add individually selected projects not already covered
-    const allSelected = new Set([...projectsInSelectedGroups, ...selectedProjects]);
-    return allSelected.size;
-  }, [selectedGroups, selectedProjects, groupProjects]);
+  const toggleSelectAllVisible = () => {
+    const allIds = allVisibleProjects.map((p) => p.id);
+    const allSelected = allIds.every((id) => selectedProjects.has(id));
+    const next = new Set(selectedProjects);
+    if (allSelected) {
+      allIds.forEach((id) => next.delete(id));
+    } else {
+      allIds.forEach((id) => next.add(id));
+    }
+    setSelectedProjects(next);
+  };
+
+  const selectedCount = selectedProjects.size;
 
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
 
   const triggerOperation = async (operation: 'batch_index' | 'reindex' | 'regenerate_wiki') => {
-    // Build the request body from selection
-    const groupIdsToIndex = Array.from(selectedGroups);
-    // Individual projects: those selected but NOT part of a fully selected group
-    const projectsInSelectedGroups = new Set<number>();
-    selectedGroups.forEach((gid) => {
-      (groupProjects[gid] || []).forEach((p) => projectsInSelectedGroups.add(p.id));
-    });
-    const individualProjectIds = Array.from(selectedProjects).filter(
-      (pid) => !projectsInSelectedGroups.has(pid)
-    );
+    const projectIds = Array.from(selectedProjects);
 
-    const body: { group_ids?: number[]; project_ids?: number[]; force?: boolean } = {};
-    if (groupIdsToIndex.length > 0) body.group_ids = groupIdsToIndex;
-    if (individualProjectIds.length > 0) body.project_ids = individualProjectIds;
+    const body: { project_ids?: number[]; force?: boolean } = {};
+    if (projectIds.length > 0) body.project_ids = projectIds;
     if (forceReindex) body.force = true;
 
     const endpointMap: Record<string, string> = {
@@ -952,50 +888,65 @@ export default function AdminPage() {
             {/* ============================================================ */}
             {activeTab === 'batch' && (
               <>
-                <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)] mb-4">Batch Indexing</h2>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold tracking-tight text-[var(--foreground)]">
+                    All Visible Projects
+                    {allProjectsTotal > 0 && (
+                      <span className="ml-2 text-sm font-normal text-[var(--muted)]">({allProjectsTotal} total)</span>
+                    )}
+                  </h2>
+                  {selectedCount > 0 && (
+                    <span className="text-sm text-[var(--accent-primary)] font-medium">{selectedCount} selected</span>
+                  )}
+                </div>
 
-                {/* Project search */}
+                {/* Search filter */}
                 <div className="mb-4">
-                  <div className="flex items-center gap-2 mb-2">
-                    <div className="relative flex-1">
-                      <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
-                      <input
-                        type="text"
-                        value={projectSearch}
-                        onChange={(e) => setProjectSearch(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleProjectSearch()}
-                        placeholder="Search projects by name (press Enter)..."
-                        className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
-                      />
-                    </div>
-                    <button
-                      onClick={handleProjectSearch}
-                      disabled={searchLoading || !projectSearch.trim()}
-                      className="px-3 py-1.5 text-sm rounded-md bg-[var(--accent-primary)] text-white hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {searchLoading ? 'Searching...' : 'Search'}
-                    </button>
+                  <div className="relative">
+                    <FaSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--muted)] text-xs" />
+                    <input
+                      type="text"
+                      value={projectSearch}
+                      onChange={(e) => setProjectSearch(e.target.value)}
+                      placeholder="Filter projects by name..."
+                      className="w-full pl-8 pr-3 py-1.5 text-sm border border-[var(--border-color)] rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                    />
                   </div>
-                  {searchResults.length > 0 && (
-                    <div className="border border-[var(--border-color)] rounded-md p-2 mb-2 max-h-48 overflow-y-auto">
-                      <p className="text-xs text-[var(--muted)] mb-1">
-                        Found {searchResults.length} projects — check to add to index selection
-                      </p>
-                      {searchResults.map((p) => (
+                </div>
+
+                {/* Project list */}
+                {allProjectsLoading && allVisibleProjects.length === 0 ? (
+                  <p className="text-sm text-[var(--muted)] py-4 text-center">Loading projects...</p>
+                ) : allVisibleProjects.length === 0 ? (
+                  <p className="text-sm text-[var(--muted)] py-4 text-center">
+                    {projectSearch.trim() ? 'No projects match your search.' : 'No visible projects found.'}
+                  </p>
+                ) : (
+                  <>
+                    {/* Select all toggle */}
+                    <div className="flex items-center gap-2 px-2 py-1.5 mb-1 border-b border-[var(--border-color)]">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={allVisibleProjects.length > 0 && allVisibleProjects.every((p) => selectedProjects.has(p.id))}
+                          onChange={toggleSelectAllVisible}
+                          className="accent-[var(--accent-primary)]"
+                        />
+                        <span className="text-xs font-medium text-[var(--muted)]">Select all on this page</span>
+                      </label>
+                    </div>
+
+                    <div className="space-y-0.5 mb-3 max-h-96 overflow-y-auto">
+                      {allVisibleProjects.map((p) => (
                         <div
                           key={p.id}
-                          className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--accent-primary)]/5"
+                          className="flex items-center gap-2 py-1.5 px-2 rounded hover:bg-[var(--accent-primary)]/5"
                         >
                           <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
                             <input
                               type="checkbox"
                               checked={selectedProjects.has(p.id)}
-                              onChange={() => {
-                                const next = new Set(selectedProjects);
-                                if (next.has(p.id)) next.delete(p.id);
-                                else next.add(p.id);
-                                setSelectedProjects(next);
-                              }}
+                              onChange={() => toggleProjectSelect(p.id)}
                               className="accent-[var(--accent-primary)]"
                             />
                             <span className="text-sm text-[var(--foreground)]">{p.path_with_namespace}</span>
@@ -1004,83 +955,20 @@ export default function AdminPage() {
                         </div>
                       ))}
                     </div>
-                  )}
-                </div>
 
-                {/* Group list */}
-                {groups.length === 0 ? (
-                  <p className="text-sm text-[var(--muted)]">No groups configured (set GITLAB_BATCH_GROUPS).</p>
-                ) : (
-                  <div className="space-y-1 mb-4">
-                    {groups.map((group) => {
-                      const isExpanded = expandedGroups.has(group.id);
-                      const isGroupSelected = selectedGroups.has(group.id);
-                      const gProjects = groupProjects[group.id] || [];
-                      const isLoadingGroup = loadingGroups.has(group.id);
-
-                      const selectedInGroup = gProjects.filter((p) => selectedProjects.has(p.id)).length;
-                      const isIndeterminate = !isGroupSelected && selectedInGroup > 0;
-
-                      return (
-                        <div key={group.id}>
-                          <div className="flex items-center gap-2 p-2 rounded-md hover:bg-[var(--accent-primary)]/5">
-                            <button
-                              onClick={() => toggleGroupExpand(group.id)}
-                              className="p-1 text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors"
-                            >
-                              {isExpanded ? <FaChevronDown className="text-xs" /> : <FaChevronRight className="text-xs" />}
-                            </button>
-                            <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
-                              <input
-                                type="checkbox"
-                                checked={isGroupSelected}
-                                ref={(el) => {
-                                  if (el) el.indeterminate = isIndeterminate;
-                                }}
-                                onChange={() => toggleGroupSelect(group.id)}
-                                className="accent-[var(--accent-primary)]"
-                              />
-                              <span className="font-medium text-sm text-[var(--foreground)]">{group.name}</span>
-                              <span className="text-xs text-[var(--muted)]">({group.full_path})</span>
-                              {gProjects.length > 0 && (
-                                <span className="text-xs text-[var(--muted)]">
-                                  &middot; {gProjects.length} projects
-                                </span>
-                              )}
-                            </label>
-                          </div>
-
-                          {isExpanded && (
-                            <div className="ml-10 border-l border-[var(--border-color)] pl-3 pb-1">
-                              {isLoadingGroup ? (
-                                <p className="text-xs text-[var(--muted)] py-2">Loading projects...</p>
-                              ) : gProjects.length === 0 ? (
-                                <p className="text-xs text-[var(--muted)] py-2">No projects in this group.</p>
-                              ) : (
-                                gProjects.map((p) => (
-                                  <div
-                                    key={p.id}
-                                    className="flex items-center gap-2 py-1 px-2 rounded hover:bg-[var(--accent-primary)]/5"
-                                  >
-                                    <label className="flex items-center gap-2 flex-1 cursor-pointer select-none">
-                                      <input
-                                        type="checkbox"
-                                        checked={selectedProjects.has(p.id)}
-                                        onChange={() => toggleProjectSelect(p.id, group.id)}
-                                        className="accent-[var(--accent-primary)]"
-                                      />
-                                      <span className="text-sm text-[var(--foreground)]">{p.path_with_namespace}</span>
-                                    </label>
-                                    <IndexStatusBadge status={p.index_status} />
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+                    {/* Load more */}
+                    {allVisibleProjects.length < allProjectsTotal && (
+                      <div className="text-center mb-3">
+                        <button
+                          onClick={() => fetchAllVisibleProjects(allProjectsPage + 1, projectSearchDebounced)}
+                          disabled={allProjectsLoading}
+                          className="px-4 py-1.5 text-sm rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:bg-[var(--accent-primary)]/5 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {allProjectsLoading ? 'Loading...' : `Load more (${allVisibleProjects.length}/${allProjectsTotal})`}
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {/* Action bar */}

@@ -225,6 +225,74 @@ async def get_config(_admin: dict = Depends(require_admin)):
 # ---------------------------------------------------------------------------
 
 
+@admin_router.get("/all-projects")
+async def get_all_visible_projects(
+    q: str = "",
+    page: int = 1,
+    per_page: int = 50,
+    _admin: dict = Depends(require_admin),
+):
+    """Return all projects visible to the service token, with optional search filtering."""
+    from api.config import GITLAB_SERVICE_TOKEN
+
+    if not GITLAB_URL or not GITLAB_SERVICE_TOKEN:
+        raise HTTPException(
+            status_code=400,
+            detail="GITLAB_URL and GITLAB_SERVICE_TOKEN must be set",
+        )
+
+    params: dict = {
+        "membership": "true",
+        "per_page": min(per_page, 100),
+        "page": page,
+        "order_by": "name",
+        "sort": "asc",
+    }
+    if q.strip():
+        params["search"] = q.strip()
+
+    results = []
+    total = 0
+
+    async with httpx.AsyncClient(verify=False) as client:
+        try:
+            resp = await client.get(
+                f"{GITLAB_URL.rstrip('/')}/api/v4/projects",
+                params=params,
+                headers={"PRIVATE-TOKEN": GITLAB_SERVICE_TOKEN},
+                timeout=15.0,
+            )
+            if resp.status_code == 200:
+                total = int(resp.headers.get("x-total", "0"))
+                for data in resp.json():
+                    path = data.get("path_with_namespace", "")
+                    meta = get_project_metadata(path)
+                    results.append(
+                        {
+                            "id": data["id"],
+                            "name": data.get("name", ""),
+                            "path_with_namespace": path,
+                            "last_activity_at": data.get("last_activity_at", ""),
+                            "is_indexed": meta is not None
+                            and meta.get("status") == "indexed",
+                            "index_status": meta.get("status") if meta else None,
+                        }
+                    )
+            else:
+                logger.warning(
+                    "Failed to fetch all projects (page %d): %s", page, resp.text
+                )
+        except Exception as exc:
+            logger.error("Error fetching all visible projects: %s", exc)
+
+    return {
+        "projects": results,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    }
+
+
 @admin_router.get("/groups")
 async def get_groups(_admin: dict = Depends(require_admin)):
     """Return all GitLab groups visible to the service token."""
