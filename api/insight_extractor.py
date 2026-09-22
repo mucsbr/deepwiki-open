@@ -216,7 +216,7 @@ async def extract_project_insights(
         for q in queries:
             try:
                 results = rag(q)
-                if results and len(results) > 0 and hasattr(results[0], 'documents'):
+                if results and len(results) > 0:
                     for doc in results[0].documents[:3]:
                         meta = getattr(doc, 'meta_data', {}) or {}
                         all_code_snippets.append(

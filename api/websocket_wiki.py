@@ -28,6 +28,50 @@ from api.rag import RAG
 # Configure logging
 from api.logging_config import setup_logging
 
+
+def _format_repo_label(repo_value: str) -> str:
+    if not repo_value:
+        return ""
+    repo_value = repo_value.rstrip("/")
+    if "://" in repo_value:
+        return repo_value.split("://", 1)[1].split("/", 1)[-1]
+    return repo_value
+
+
+def _format_code_context(documents: List[Any]) -> str:
+    docs_by_file = {}
+    for doc in documents:
+        meta = getattr(doc, "meta_data", {}) or {}
+        file_path = meta.get("file_path", "unknown")
+        source_repo = meta.get("source_repo", "")
+        group_key = (source_repo, file_path)
+        docs_by_file.setdefault(group_key, []).append(doc)
+
+    context_parts = []
+    for (source_repo, file_path), grouped_docs in docs_by_file.items():
+        repo_label = _format_repo_label(source_repo)
+        header = f"## [{repo_label}] {file_path}\n\n" if repo_label else f"## {file_path}\n\n"
+        content = "\n\n".join(doc.text for doc in grouped_docs)
+        context_parts.append(f"{header}{content}")
+
+    return "\n\n----------\n\n".join(context_parts)
+
+
+def _format_wiki_context(documents: List[Any]) -> str:
+    context_parts = []
+    for doc in documents:
+        meta = getattr(doc, "meta_data", {}) or {}
+        page_title = meta.get("page_title") or meta.get("page_id") or "Wiki"
+        source_repo = meta.get("source_repo", "")
+        repo_label = _format_repo_label(source_repo)
+        if repo_label:
+            header = f"## [Wiki:{repo_label}] {page_title}\n\n"
+        else:
+            header = f"## [Wiki: {page_title}]\n\n"
+        context_parts.append(f"{header}{getattr(doc, 'text', '')}")
+
+    return "\n\n----------\n\n".join(context_parts)
+
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -299,10 +343,18 @@ async def handle_websocket_chat(websocket: WebSocket):
                     included_dirs=included_dirs,
                     included_files=included_files,
                 )
+                try:
+                    request_rag.prepare_multi_wiki_retriever(all_repo_urls, repo_type=request.type)
+                except Exception as wiki_exc:
+                    logger.warning(f"Optional multi-repo wiki retriever preparation failed: {wiki_exc}")
                 logger.info(f"Multi-repo retriever prepared for {len(all_repo_urls)} repos")
             else:
                 request_rag = RAG(provider=request.provider, model=request.model)
                 request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files)
+                try:
+                    request_rag.prepare_wiki_retriever(request.repo_url, request.type)
+                except Exception as wiki_exc:
+                    logger.warning(f"Optional wiki retriever preparation failed: {wiki_exc}")
                 logger.info(f"Retriever prepared for {request.repo_url}")
         except ValueError as e:
             if "No valid documents with embeddings found" in str(e):
@@ -387,6 +439,7 @@ async def handle_websocket_chat(websocket: WebSocket):
 
         # Only retrieve documents if input is not too large
         context_text = ""
+        wiki_context_text = ""
         retrieved_documents = None
 
         if not input_too_large:
@@ -403,40 +456,33 @@ async def handle_websocket_chat(websocket: WebSocket):
                     # This will use the actual RAG implementation
                     retrieved_documents = request_rag(rag_query, language=request.language)
 
-                    if retrieved_documents and retrieved_documents[0].documents:
-                        # Format context for the prompt in a more structured way
+                    if retrieved_documents and len(retrieved_documents) > 0:
                         documents = retrieved_documents[0].documents
-                        logger.info(f"Retrieved {len(documents)} documents")
-
-                        # Group documents by file path
-                        docs_by_file = {}
-                        for doc in documents:
-                            file_path = doc.meta_data.get('file_path', 'unknown')
-                            if file_path not in docs_by_file:
-                                docs_by_file[file_path] = []
-                            docs_by_file[file_path].append(doc)
-
-                        # Format context text with file path grouping
-                        context_parts = []
-                        for file_path, docs in docs_by_file.items():
-                            # Add file header with metadata
-                            header = f"## File Path: {file_path}\n\n"
-                            # Add document content
-                            content = "\n\n".join([doc.text for doc in docs])
-
-                            context_parts.append(f"{header}{content}")
-
-                        # Join all parts with clear separation
-                        context_text = "\n\n" + "-" * 10 + "\n\n".join(context_parts)
+                        logger.info(f"Retrieved {len(documents)} code documents")
+                        context_text = _format_code_context(documents)
                     else:
                         logger.warning("No documents retrieved from RAG")
                 except Exception as e:
                     logger.error(f"Error in RAG retrieval: {str(e)}")
                     # Continue without RAG if there's an error
 
+                try:
+                    if getattr(request_rag, "wiki_retriever", None):
+                        wiki_results = request_rag.wiki_retriever(rag_query)
+                        if wiki_results and wiki_results[0].doc_indices:
+                            wiki_docs = [
+                                request_rag.wiki_docs[doc_index]
+                                for doc_index in wiki_results[0].doc_indices
+                            ]
+                            logger.info(f"Retrieved {len(wiki_docs)} wiki documents")
+                            wiki_context_text = _format_wiki_context(wiki_docs)
+                except Exception as e:
+                    logger.warning(f"Error in wiki RAG retrieval: {str(e)}")
+
             except Exception as e:
                 logger.error(f"Error retrieving documents: {str(e)}")
                 context_text = ""
+                wiki_context_text = ""
 
         # Get repository information
         repo_url = request.repo_url or "multiple repositories"
@@ -624,6 +670,9 @@ This file contains...
         # Only include context if it's not empty
         CONTEXT_START = "<START_OF_CONTEXT>"
         CONTEXT_END = "<END_OF_CONTEXT>"
+        if wiki_context_text.strip():
+            prompt += f"<WIKI_CONTEXT>\n{wiki_context_text}\n</WIKI_CONTEXT>\n\n"
+
         if context_text.strip():
             prompt += f"{CONTEXT_START}\n{context_text}\n{CONTEXT_END}\n\n"
         else:

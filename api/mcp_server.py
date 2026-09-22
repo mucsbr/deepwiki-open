@@ -135,6 +135,41 @@ def _get_gitlab_url(project_path: str) -> str:
     return f"{base}/{project_path}"
 
 
+def _format_repo_label(repo_value: str) -> str:
+    if not repo_value:
+        return ""
+    repo_value = repo_value.rstrip("/")
+    if "://" in repo_value:
+        return repo_value.split("://", 1)[1].split("/", 1)[-1]
+    return repo_value
+
+
+def _format_code_contexts(documents, limit: int) -> list[str]:
+    contexts = []
+    for doc in documents[:limit]:
+        meta = getattr(doc, "meta_data", {}) or {}
+        repo_label = _format_repo_label(meta.get("source_repo", ""))
+        file_path = meta.get("file_path", "unknown")
+        prefix = f"[{repo_label}] " if repo_label else ""
+        contexts.append(
+            f"{prefix}{file_path}:\n{getattr(doc, 'text', '')[:800]}"
+        )
+    return contexts
+
+
+def _format_wiki_contexts(documents, limit: int) -> list[str]:
+    contexts = []
+    for doc in documents[:limit]:
+        meta = getattr(doc, "meta_data", {}) or {}
+        repo_label = _format_repo_label(meta.get("source_repo", ""))
+        page_title = meta.get("page_title") or meta.get("page_id") or "Wiki"
+        prefix = f"[{repo_label}] " if repo_label else ""
+        contexts.append(
+            f"{prefix}{page_title}:\n{getattr(doc, 'text', '')[:800]}"
+        )
+    return contexts
+
+
 # ---------------------------------------------------------------------------
 # Product-level tools
 # ---------------------------------------------------------------------------
@@ -243,7 +278,7 @@ async def search_product_code(product_id: str, query: str, top_k: int = 10) -> s
         results = rag(query)
 
         snippets = []
-        if results and len(results) > 0 and hasattr(results[0], 'documents'):
+        if results and len(results) > 0:
             for doc in results[0].documents[:top_k]:
                 meta = getattr(doc, 'meta_data', {}) or {}
                 snippets.append({
@@ -297,27 +332,37 @@ async def ask_product(product_id: str, question: str) -> str:
             repo_type="gitlab",
             access_token=GITLAB_SERVICE_TOKEN or None,
         )
+        try:
+            rag.prepare_multi_wiki_retriever(repo_urls=repo_urls, repo_type="gitlab")
+        except Exception as wiki_exc:
+            logger.warning("Optional product wiki retriever preparation failed: %s", wiki_exc)
 
         # Retrieve relevant documents
         results = rag(question)
         contexts = []
-        if results and len(results) > 0 and hasattr(results[0], 'documents'):
-            for doc in results[0].documents[:10]:
-                meta = getattr(doc, 'meta_data', {}) or {}
-                contexts.append(
-                    f"[{meta.get('source_repo', 'unknown')}] "
-                    f"{meta.get('file_path', 'unknown')}:\n"
-                    f"{getattr(doc, 'text', '')[:800]}"
-                )
+        if results and len(results) > 0:
+            contexts.extend(_format_code_contexts(results[0].documents, 10))
+
+        wiki_contexts = []
+        try:
+            if getattr(rag, "wiki_retriever", None):
+                wiki_results = rag.wiki_retriever(question)
+                if wiki_results and len(wiki_results) > 0 and hasattr(wiki_results[0], 'doc_indices'):
+                    wiki_docs = [rag.wiki_docs[idx] for idx in wiki_results[0].doc_indices]
+                    wiki_contexts.extend(_format_wiki_contexts(wiki_docs, 5))
+        except Exception as wiki_exc:
+            logger.warning("Optional product wiki retrieval failed: %s", wiki_exc)
 
         # Generate answer using configured LLM
-        context_text = "\n\n---\n\n".join(contexts) if contexts else "(no relevant code found)"
+        wiki_context_text = "\n\n---\n\n".join(wiki_contexts) if wiki_contexts else ""
+        code_context_text = "\n\n---\n\n".join(contexts) if contexts else "(no relevant code found)"
         prompt = (
             f"You are a code expert for the product '{product.get('name', product_id)}'.\n"
             f"Product description: {product.get('description', 'N/A')}\n"
             f"Repositories: {', '.join(repos)}\n\n"
-            f"Based on the following code context, answer the question.\n\n"
-            f"## Code Context\n{context_text}\n\n"
+            f"Based on the following retrieved context, answer the question.\n\n"
+            f"## Wiki Context\n{wiki_context_text or '(no relevant wiki found)'}\n\n"
+            f"## Code Context\n{code_context_text}\n\n"
             f"## Question\n{question}\n\n"
             f"Provide a detailed, structured answer in markdown."
         )
@@ -458,7 +503,7 @@ async def search_code(project_path: str, query: str, top_k: int = 5) -> str:
         results = rag(query)
 
         snippets = []
-        if results and len(results) > 0 and hasattr(results[0], 'documents'):
+        if results and len(results) > 0:
             for doc in results[0].documents[:top_k]:
                 meta = getattr(doc, 'meta_data', {}) or {}
                 snippets.append({
@@ -526,18 +571,28 @@ async def ask_question(project_path: str, question: str) -> str:
             type="gitlab",
             access_token=GITLAB_SERVICE_TOKEN or None,
         )
+        try:
+            rag.prepare_wiki_retriever(repo_url, repo_type="gitlab")
+        except Exception as wiki_exc:
+            logger.warning("Optional wiki retriever preparation failed for %s: %s", project_path, wiki_exc)
         results = rag(question)
 
         contexts = []
-        if results and len(results) > 0 and hasattr(results[0], 'documents'):
-            for doc in results[0].documents[:8]:
-                meta = getattr(doc, 'meta_data', {}) or {}
-                contexts.append(
-                    f"{meta.get('file_path', 'unknown')}:\n"
-                    f"{getattr(doc, 'text', '')[:800]}"
-                )
+        if results and len(results) > 0:
+            contexts.extend(_format_code_contexts(results[0].documents, 8))
 
-        context_text = "\n\n---\n\n".join(contexts) if contexts else "(no relevant code found)"
+        wiki_contexts = []
+        try:
+            if getattr(rag, "wiki_retriever", None):
+                wiki_results = rag.wiki_retriever(question)
+                if wiki_results and len(wiki_results) > 0 and hasattr(wiki_results[0], 'doc_indices'):
+                    wiki_docs = [rag.wiki_docs[idx] for idx in wiki_results[0].doc_indices]
+                    wiki_contexts.extend(_format_wiki_contexts(wiki_docs, 5))
+        except Exception as wiki_exc:
+            logger.warning("Optional wiki retrieval failed for %s: %s", project_path, wiki_exc)
+
+        code_context_text = "\n\n---\n\n".join(contexts) if contexts else "(no relevant code found)"
+        wiki_context_text = "\n\n---\n\n".join(wiki_contexts) if wiki_contexts else ""
 
         owner, repo = _split_project_path(project_path)
         cache = _find_wiki_cache(owner, repo)
@@ -548,8 +603,9 @@ async def ask_question(project_path: str, question: str) -> str:
 
         prompt = (
             f"You are a code expert for the project '{project_path}'.{wiki_desc}\n"
-            f"Based on the following code context, answer the question.\n\n"
-            f"## Code Context\n{context_text}\n\n"
+            f"Based on the following retrieved context, answer the question.\n\n"
+            f"## Wiki Context\n{wiki_context_text or '(no relevant wiki found)'}\n\n"
+            f"## Code Context\n{code_context_text}\n\n"
             f"## Question\n{question}\n\n"
             f"Provide a detailed, structured answer in markdown."
         )

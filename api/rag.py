@@ -1,8 +1,9 @@
 import logging
 import weakref
 import re
+import os
 from dataclasses import dataclass
-from typing import Any, List, Tuple, Dict
+from typing import Any, List, Dict, Optional
 from uuid import uuid4
 
 import adalflow as adal
@@ -39,6 +40,7 @@ class CustomConversation:
 
 # Import other adalflow components
 from adalflow.components.retriever.faiss_retriever import FAISSRetriever
+from adalflow.core.db import LocalDB
 from api.config import configs
 from api.data_pipeline import DatabaseManager
 
@@ -418,16 +420,65 @@ IMPORTANT FORMATTING RULES:
                 logger.error(f"Sample embedding sizes: {', '.join(sizes)}")
             raise
 
-    def call(self, query: str, language: str = "en") -> Tuple[List]:
-        """
-        Process a query using RAG.
+    def _resolve_wiki_pkl_path(self, repo_url_or_path: str, repo_type: str) -> Optional[str]:
+        """Resolve the persisted wiki embedding path for a repo URL or project path."""
+        from api.wiki_embedder import get_wiki_pkl_path, get_wiki_pkl_path_from_project
 
-        Args:
-            query: The user's query
+        candidate_paths = [get_wiki_pkl_path(repo_url_or_path, repo_type)]
 
-        Returns:
-            Tuple of (RAGAnswer, retrieved_documents)
-        """
+        project_path = repo_url_or_path.strip().rstrip("/")
+        if "://" in project_path:
+            project_path = project_path.split("://", 1)[1]
+            if "/" in project_path:
+                project_path = project_path.split("/", 1)[1]
+
+        if project_path and "/" in project_path:
+            candidate_paths.append(get_wiki_pkl_path_from_project(project_path))
+
+        for candidate_path in candidate_paths:
+            if os.path.exists(candidate_path):
+                return candidate_path
+
+        return candidate_paths[0] if candidate_paths else None
+
+    def prepare_wiki_retriever(self, repo_url_or_path: str, repo_type: str = "github") -> None:
+        """Load wiki embeddings from local storage and build an optional retriever."""
+        self.wiki_retriever = None
+        self.wiki_docs = []
+
+        try:
+            wiki_pkl_path = self._resolve_wiki_pkl_path(repo_url_or_path, repo_type)
+            if not wiki_pkl_path or not os.path.exists(wiki_pkl_path):
+                logger.info("Wiki embeddings not found for %s, skipping wiki retriever", repo_url_or_path)
+                return
+
+            wiki_db = LocalDB.load_state(wiki_pkl_path)
+            wiki_docs = wiki_db.get_transformed_data(key="split_and_embed") or []
+            self.wiki_docs = self._validate_and_filter_embeddings(wiki_docs)
+
+            if not self.wiki_docs:
+                logger.warning("No valid wiki documents found in %s", wiki_pkl_path)
+                return
+
+            retrieve_embedder = self.query_embedder if self.is_ollama_embedder else self.embedder
+            self.wiki_retriever = FAISSRetriever(
+                **configs["retriever"],
+                embedder=retrieve_embedder,
+                documents=self.wiki_docs,
+                document_map_func=lambda doc: doc.vector,
+            )
+            logger.info(
+                "Wiki FAISS retriever created successfully with %d documents (pkl_path=%s)",
+                len(self.wiki_docs),
+                wiki_pkl_path,
+            )
+        except Exception as e:
+            logger.warning("Failed to prepare wiki retriever for %s: %s", repo_url_or_path, e)
+            self.wiki_retriever = None
+            self.wiki_docs = []
+
+    def call(self, query: str, language: str = "en") -> List:
+        """Process a query using RAG and return retrieval results."""
         try:
             retrieved_documents = self.retriever(query)
 
@@ -441,10 +492,4 @@ IMPORTANT FORMATTING RULES:
 
         except Exception as e:
             logger.error(f"Error in RAG call: {str(e)}")
-
-            # Create error response
-            error_response = RAGAnswer(
-                rationale="Error occurred while processing the query.",
-                answer=f"I apologize, but I encountered an error while processing your question. Please try again or rephrase your question."
-            )
-            return error_response, []
+            raise

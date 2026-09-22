@@ -878,5 +878,14 @@ class WikiGenerator:
             json.dump(cache_data, f, indent=2, ensure_ascii=False)
 
         logger.info("Wiki cache saved to %s", cache_path)
+
+        # Step 5 — Build wiki embeddings for RAG
+        _progress("building wiki embeddings")
+        try:
+            from api.wiki_embedder import build_wiki_embeddings
+            build_wiki_embeddings(f"{owner}/{repo}")
+        except Exception as exc:
+            logger.warning("Wiki embedding build failed: %s", exc)
+
         _progress("done")
         return cache_data

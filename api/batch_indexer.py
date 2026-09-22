@@ -210,6 +210,14 @@ class BatchIndexer:
                 access_token=self.service_token,
             )
             logger.info("Wiki cache regenerated for %s", path_with_ns)
+
+            # Build wiki embeddings for RAG
+            try:
+                from api.wiki_embedder import build_wiki_embeddings
+                build_wiki_embeddings(path_with_ns)
+            except Exception as embed_exc:
+                logger.warning("Wiki embedding build failed for %s: %s", path_with_ns, embed_exc)
+
             return True
         except Exception as exc:
             logger.warning("Wiki regeneration failed for %s: %s", path_with_ns, exc)

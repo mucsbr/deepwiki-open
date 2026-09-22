@@ -13,78 +13,71 @@ This is a two-process application:
 - **Frontend**: Next.js 15 (React 19, TypeScript, Tailwind CSS 4) on port 3000
 - **Backend**: Python FastAPI (uvicorn) on port 8001
 
-The frontend proxies API requests to the backend via Next.js rewrites configured in `next.config.ts`. Wiki generation uses WebSocket connections (`/ws/wiki/generate` in backend, client in `src/utils/websocketClient.ts`). Chat/Ask uses WebSocket at `/ws/chat`.
+The frontend proxies API requests to the backend via Next.js rewrites configured in `next.config.ts`. Any new backend route reachable from the browser must be added to the `rewrites()` list there, or it will 404 in dev.
+
+### The two wiki generation paths
+
+This is the single most important thing to understand before touching wiki code. There are **two independent implementations** that produce the same `wikicache` JSON:
+
+1. **Interactive / frontend-driven** — The browser drives generation itself. `src/app/[owner]/[repo]/page.tsx` opens a WebSocket to `/ws/chat` (`api/websocket_wiki.py:handle_websocket_chat`), first asking the LLM for the wiki structure, then looping over pages and requesting each one's content. The frontend assembles the result and POSTs it to `/api/wiki_cache`. There is **no** `/ws/wiki/generate` endpoint — `/ws/chat` is the only WebSocket route (`api/api.py:419`). If the socket fails, the page falls back to HTTP `POST /api/chat/stream`, which proxies to the backend's `/chat/completions/stream` (`api/simple_chat.py:chat_completions_stream`, attached via `add_api_route` at `api/api.py:417`).
+
+2. **Server-side / batch** — `api/wiki_generator.py:WikiGenerator.generate_wiki()` runs the whole pipeline in the backend (file tree → structure → pages → save cache). This is what `api/batch_indexer.py` and the admin `regenerate-wiki` endpoints use. No browser involved.
+
+Changes to prompts or output shape usually need to land in **both** paths. `api/prompts.py` serves path 1; `wiki_generator.py` has its own `_wiki_structure_prompt` / `_page_content_prompt`.
 
 ### Backend (`api/`)
 
 **Core:**
-- `main.py` — Entry point. Loads `.env`, configures logging, starts uvicorn with hot-reload in dev.
-- `api.py` — Main FastAPI app. REST endpoints for wiki cache CRUD, repo structure, health check, GitLab proxy. WebSocket endpoints for wiki generation and chat. Mounts auth router, admin router, and MCP server.
-- `config.py` — Loads JSON configs, API keys from env, provides model client factory. Key constants: `GITLAB_URL`, `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET`, `GITLAB_SERVICE_TOKEN`, `JWT_SECRET_KEY`, `ADMIN_USERNAMES`.
-- `logging_config.py` — Centralized logging setup with file and console handlers.
+- `main.py` — Entry point. Loads `.env`, sets up logging, monkey-patches `watchfiles` to exclude `api/logs/` from hot-reload, optionally starts an APScheduler cron job for batch indexing (`BATCH_INDEX_SCHEDULE`), then runs uvicorn. Also supports `--batch-index` to run the indexer once and exit.
+- `api.py` — Main FastAPI app. REST endpoints for wiki cache CRUD, repo structure, GitLab proxy, health. Mounts the auth router, admin router, and the MCP app at `/mcp`.
+- `config.py` — Loads JSON configs from `api/config/`, reads API keys and GitLab settings from env, provides the model client factory. Config JSON supports `${ENV_VAR}` substitution.
+- `logging_config.py` — Centralized logging (file + console).
 
 **Authentication & Authorization:**
-- `gitlab_auth.py` — GitLab OAuth2 SSO. Routes: `/auth/gitlab/login`, `/auth/gitlab/callback`, `/auth/me`, `/auth/mcp-token`. JWT creation (8h session + 30d MCP token), Fernet encryption for GitLab access tokens stored in JWT.
-- `gitlab_permission.py` — Repository permission checking against GitLab API. In-memory caches: per-project permission (TTL from `PERMISSION_CACHE_TTL`, default 300s) and per-user project list (24h TTL). Functions: `check_repo_access`, `get_user_accessible_projects`, `verify_repo_permission`.
+- `gitlab_auth.py` — GitLab OAuth2 SSO. Routes: `/auth/gitlab/login`, `/auth/gitlab/callback`, `/auth/me`, `/auth/mcp-token`. JWT creation (8h session + 30d MCP token), Fernet encryption for GitLab access tokens stored inside the JWT.
+- `gitlab_permission.py` — Repository permission checks against the GitLab API. Two in-memory caches: per-project permission (`PERMISSION_CACHE_TTL`, default 300s) and per-user project list (24h). Functions: `check_repo_access`, `get_user_accessible_projects`, `verify_repo_permission`.
 
 **Admin & Batch Operations:**
-- `admin.py` — Admin API router (`/api/admin/*`). Endpoints for GitLab groups/projects listing, batch indexing triggers, indexed project management (update/remove/reindex), system stats.
-- `batch_indexer.py` — Background batch indexing. Clones repos, builds embeddings, generates wiki for multiple projects. Uses `GITLAB_SERVICE_TOKEN` for repo access.
-- `metadata_store.py` — JSON file store at `~/.adalflow/metadata/index_metadata.json`. Tracks indexed project status, timestamps, paths.
+- `admin.py` — Admin router (`/api/admin/*`, ~26 routes). GitLab group/project listing, batch indexing triggers, per-project reindex/regenerate-wiki/extract-insights, product CRUD, repo-relations analysis, status polling, system stats.
+- `batch_indexer.py` — `BatchIndexer.index_project()` runs three stages in order: `reindex_project` (clone + embeddings) → `regenerate_wiki` → `extract_insights`. `run_selected()` can run any single stage. Uses `GITLAB_SERVICE_TOKEN`.
+- `metadata_store.py` — JSON store at `~/.adalflow/metadata/index_metadata.json`.
 
-**Wiki Generation:**
-- `websocket_wiki.py` — WebSocket handler for wiki generation. Orchestrates: clone repo → build embeddings → generate wiki structure → generate page content (streaming).
-- `wiki_generator.py` — Core wiki generation logic. `_call_llm_inner` with retry, `<think>` block stripping, JSON extraction.
-- `simple_chat.py` — Standalone FastAPI app for chat completions (DeepResearch iterations).
-- `data_pipeline.py` — Repository cloning, file reading, text splitting, embedding creation. Uses adalflow for embeddings and local DB storage.
-- `rag.py` — RAG (Retrieval Augmented Generation) implementation using FAISS retriever and adalflow.
-- `multi_rag.py` — Multi-repo RAG. Searches code across multiple repositories simultaneously.
-- `prompts.py` — All LLM prompt templates (wiki generation, RAG, DeepResearch).
+**Retrieval (code + wiki, dual-source):**
+- `data_pipeline.py` — Cloning, file reading, splitting, embedding creation. Writes `~/.adalflow/databases/{repo_dir_name}.pkl`.
+- `wiki_embedder.py` — Builds a **second** embedding DB from the generated wiki cache, at `{repo_dir_name}_wiki.pkl`. This lets Ask retrieve prose wiki paragraphs alongside raw code. Called at the end of `wiki_generator` and `batch_indexer`.
+- `rag.py` — Single-repo RAG (FAISS + adalflow). `prepare_retriever()` for code, `prepare_wiki_retriever()` for wiki. Callers generally want both.
+- `multi_rag.py` — Cross-repo equivalents, incl. `prepare_multi_wiki_retriever()`.
+- `prompts.py` — Prompt templates for the WebSocket chat path, RAG, and DeepResearch.
 
 **MCP Server:**
-- `mcp_server.py` — MCP (Model Context Protocol) server exposing DeepWiki tools to external agents (Claude Code, Codex, etc.). JWT-authenticated via `AuthenticationMiddleware`. Tools: `list_products`, `get_product_overview`, `search_product_code`, `ask_product`, `list_projects`, `get_wiki_summary`, `get_wiki_page`, `search_code`, `get_repo_relations`, `ask_question`, `get_project_insights`, `extract_project_insights`, `get_product_insights`.
+- `mcp_server.py` — MCP server exposing DeepWiki tools to external agents (Claude Code, Codex, etc.), mounted at `/mcp` behind Starlette `AuthenticationMiddleware`. Tools: `list_products`, `get_product_overview`, `search_product_code`, `ask_product`, `list_projects`, `get_wiki_summary`, `get_wiki_page`, `search_code`, `get_repo_relations`, `ask_question`, `get_project_insights`, `extract_project_insights`, `get_product_insights`.
 
 **Product & Relations:**
-- `product_manager.py` — Product CRUD. Products are logical groupings of repositories stored in `~/.adalflow/metadata/products.json`.
-- `repo_relations.py` — Repository dependency analysis. LLM-assisted import scanning, relation graph stored in `~/.adalflow/metadata/repo_relations.json`.
-- `insight_extractor.py` — Structured knowledge extraction via LLM. Produces modules, API endpoints, data models, tech stack per project. Aggregates across products.
+- `product_manager.py` — Products = logical groupings of repos, in `~/.adalflow/metadata/products.json`.
+- `repo_relations.py` — Dependency analysis via LLM-assisted import scanning → `~/.adalflow/metadata/repo_relations.json`.
+- `insight_extractor.py` — LLM extraction of modules, API endpoints, data models, tech stack per project; aggregates across products.
 
-**LLM Provider Clients** (each wraps a provider's API with streaming support):
+**LLM Provider Clients** (each wraps a provider SDK with streaming support):
 `openai_client.py`, `openrouter_client.py`, `bedrock_client.py`, `azureai_client.py`, `dashscope_client.py`, `google_embedder_client.py`, `ollama_patch.py`
 
+**Shared LLM helper:** `wiki_generator._call_llm_inner` (retry, `<think>`-block stripping, SSE parsing, JSON extraction) is imported by `insight_extractor.py`, `repo_relations.py`, and `mcp_server.py`. Changing its signature ripples into all three.
+
 **Config files** (`api/config/`):
-`generator.json` (LLM models per provider), `embedder.json` (embedding model config), `repo.json` (file filters), `lang.json` (language config).
+`generator.json` (LLM models per provider), `embedder.json`, `repo.json` (file filters), `lang.json`.
 
 ### Frontend (`src/`)
 
-**Pages:**
-- `app/page.tsx` — Home page. GitLab SSO login, authenticated project list grouped by namespace, search, MCP token modal.
-- `app/[owner]/[repo]/page.tsx` — Wiki viewer page. Displays generated wiki with tree navigation, Ask panel.
-- `app/[owner]/[repo]/slides/page.tsx` — Slides view of wiki content.
-- `app/[owner]/[repo]/workshop/page.tsx` — Workshop view.
-- `app/admin/page.tsx` — Admin dashboard. Tabs: indexed projects management, batch indexing, product management, system stats.
-- `app/admin/relations/page.tsx` — Repository dependency graph visualization (ReactFlow). Group/focus/full view modes, edge filtering.
-- `app/ask/page.tsx` — Global Ask. Cross-repo Q&A across all indexed projects.
-- `app/auth/callback/page.tsx` — OAuth callback handler. Stores JWT from GitLab SSO redirect.
-- `app/wiki/projects/page.tsx` — Lists previously generated wiki projects.
+**Pages:** `app/page.tsx` (home, SSO login, project list), `app/[owner]/[repo]/page.tsx` (wiki viewer — also the generation driver, see above), plus `slides/` and `workshop/` views, `app/admin/page.tsx` (dashboard), `app/admin/relations/page.tsx` (ReactFlow dependency graph), `app/ask/page.tsx` (Global Ask), `app/auth/callback/page.tsx`, `app/wiki/projects/page.tsx`.
 
-**Key Components:**
-- `components/Ask.tsx` — Chat panel with RAG-powered Q&A.
-- `components/Mermaid.tsx` — Mermaid diagram renderer.
-- `components/Markdown.tsx` — Markdown renderer.
-- `components/WikiTreeView.tsx` — Wiki navigation tree.
-- `contexts/AuthContext.tsx` — Authentication context. JWT storage, user state, `getAuthHeaders()` helper.
-- `contexts/LanguageContext.tsx` — i18n context.
-- `utils/websocketClient.ts` — WebSocket client for chat.
-- `messages/` — i18n translation files (en, zh, ja, es, kr, vi, fr, ru, pt-br, zh-tw).
+**Key modules:** `components/Ask.tsx`, `components/Mermaid.tsx`, `components/Markdown.tsx`, `components/WikiTreeView.tsx`, `components/RelationGraph.tsx`; `contexts/AuthContext.tsx` (JWT storage, `getAuthHeaders()`), `contexts/LanguageContext.tsx`; `utils/websocketClient.ts`; `messages/` (10 locales: en, zh, zh-tw, ja, es, kr, vi, fr, ru, pt-br — adding a UI string means updating all of them).
 
 ### Data Storage
 
-All persistent data is stored under `~/.adalflow/`:
+All persistent data lives under `~/.adalflow/`:
 - `repos/` — Cloned repositories
-- `databases/` — Embeddings and FAISS indexes
-- `wikicache/` — Generated wiki JSON cache
-- `metadata/` — Index metadata (`index_metadata.json`), products (`products.json`), repo relations (`repo_relations.json`), project insights
+- `databases/` — `{repo}.pkl` (code embeddings) and `{repo}_wiki.pkl` (wiki embeddings)
+- `wikicache/` — Generated wiki JSON, named `deepwiki_cache_{repo_type}_{owner}_{repo}_{lang}.json` with `/` in owner replaced by `--`
+- `metadata/` — `index_metadata.json`, `products.json`, `repo_relations.json`, project insights
 
 ## Development Commands
 
@@ -94,91 +87,70 @@ All persistent data is stored under `~/.adalflow/`:
 # Install Python dependencies (Poetry, from project root)
 python -m pip install poetry==2.0.1 && poetry install -C api
 
-# Start API server (from project root)
+# Start API server (from project root) — hot-reload unless NODE_ENV=production
 python -m api.main
 
-# Alternative via uv
+# Alternative via uv (this is what run.sh does)
 uv run -m api.main
+
+# Run batch indexing once and exit
+python -m api.main --batch-index
 ```
+
+Python 3.12 (`.python-version`); `pyproject.toml` declares `^3.11`.
 
 ### Frontend
 
 ```bash
-# Install JS dependencies
 yarn install
-
-# Start dev server (Turbopack, port 3000)
-yarn dev
-
-# Production build
+yarn dev      # Turbopack, port 3000
 yarn build
-
-# Lint
 yarn lint
 ```
 
 ### Docker
 
 ```bash
-# Build and run both services
 docker-compose up
-
-# Build image locally
 docker build -t deepwiki-open .
 ```
 
 ### Tests
 
 ```bash
-# Run all Python tests (from project root)
+# From project root
 pytest
 
-# Run a single test file
-pytest test/test_extract_repo_name.py
+# Single file / single test
+pytest tests/unit/test_all_embedders.py
+pytest tests/unit/test_all_embedders.py::TestEmbedderConfiguration::test_config_loading
 
-# Run by marker
-pytest -m unit
-pytest -m integration
-
-# Tests are in two locations:
-#   test/  — contains test_extract_repo_name.py
-#   tests/ — structured with tests/unit/, tests/integration/, tests/api/
+# Standalone runner (executes test files as scripts, not via pytest)
+python tests/run_tests.py
 ```
+
+Tests live in two directories: `test/` (just `test_extract_repo_name.py`) and `tests/` (`unit/`, `integration/`, `api/`).
+
+**Known config issue:** `pytest.ini` uses the header `[tool:pytest]`, which is only valid in `setup.cfg`. In a `pytest.ini` file the section must be `[pytest]`. As a result none of its settings apply — `testpaths = test`, the `-v`/`--tb=short` options, and the `unit`/`integration`/`slow`/`network` markers are all silently ignored, so pytest collects both `test/` and `tests/`. The markers are declared but never used anywhere in the suite, so `pytest -m unit` deselects everything. Fix the section header before relying on markers or `testpaths`.
+
+Collection of `test/test_extract_repo_name.py` and `tests/api/test_api.py` fails unless backend deps (`adalflow`, `requests`) are installed in the active environment.
 
 ## Environment Variables
 
-A `.env` file in the project root is required. Key variables:
+A `.env` file in the project root is required. `.env.example` covers only a subset; the authoritative list is `api/config.py`.
 
-**LLM Providers:**
-- `GOOGLE_API_KEY` — For Gemini models and Google embeddings
-- `OPENAI_API_KEY` — For OpenAI models and default embeddings
-- `OPENROUTER_API_KEY` — For OpenRouter models
-- `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_VERSION` — For Azure OpenAI
-- `OLLAMA_HOST` — Ollama server URL (default: http://localhost:11434)
-- `DEEPWIKI_EMBEDDER_TYPE` — `openai` (default), `google`, `ollama`, or `bedrock`
+**LLM Providers:** `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_VERSION`, `OLLAMA_HOST` (default `http://localhost:11434`), AWS Bedrock (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_REGION`, `AWS_ROLE_ARN`), and `DEEPWIKI_EMBEDDER_TYPE` (`openai` default, `google`, `ollama`, `bedrock`).
 
-**GitLab Enterprise Integration:**
-- `GITLAB_URL` — GitLab instance URL (e.g. `https://gitlab.example.com`)
-- `GITLAB_CLIENT_ID` — OAuth2 application ID for SSO
-- `GITLAB_CLIENT_SECRET` — OAuth2 application secret for SSO
-- `GITLAB_SERVICE_TOKEN` — Service account token for batch indexing and MCP server repo access
-- `JWT_SECRET_KEY` — Secret for signing JWT tokens (session + MCP)
-- `ADMIN_USERNAMES` — Comma-separated list of GitLab usernames with admin access
-- `PERMISSION_CACHE_TTL` — Per-project permission cache TTL in seconds (default: 300)
-- `FRONTEND_ORIGIN` — Frontend URL for OAuth callbacks (default: http://localhost:3000)
+`main.py` warns at startup if `GOOGLE_API_KEY` or `OPENAI_API_KEY` is missing, but does not exit.
 
-**Server:**
-- `DEEPWIKI_CONFIG_DIR` — Custom path for config JSON files (default: `api/config/`)
-- `SERVER_BASE_URL` — Backend URL for frontend proxy (default: http://localhost:8001)
-- `PORT` — Backend API port (default: 8001)
+**GitLab Enterprise:** `GITLAB_URL`, `GITLAB_CLIENT_ID`, `GITLAB_CLIENT_SECRET`, `GITLAB_SERVICE_TOKEN`, `GITLAB_BATCH_GROUPS` (comma-separated group IDs for scheduled indexing), `JWT_SECRET_KEY`, `ADMIN_USERNAMES` (comma-separated), `PERMISSION_CACHE_TTL` (default 300), `BATCH_INDEX_SCHEDULE` (crontab string; empty disables the scheduler), `FRONTEND_ORIGIN` (default `http://localhost:3000`).
+
+**Server:** `DEEPWIKI_CONFIG_DIR` (default `api/config/`), `SERVER_BASE_URL` (default `http://localhost:8001`), `PORT` (default 8001), `NODE_ENV` (`production` disables backend hot-reload).
 
 ## Key Patterns
 
-- **Authentication flow**: GitLab OAuth2 SSO → JWT (8h) stored in frontend `AuthContext`. MCP clients use long-lived JWT (30d) obtained via `/auth/mcp-token`.
-- **Permission model**: Frontend calls pass user's OAuth token; backend verifies against GitLab API. Results cached in-memory (per-project: 5min, project list: 24h).
-- **MCP endpoint** (`/mcp`): Wrapped with Starlette `AuthenticationMiddleware`. Accepts both session JWT and MCP token via `Authorization: Bearer <token>`.
-- The frontend communicates with the backend primarily through WebSockets for wiki generation and chat. REST is used for cache management, metadata, and auth.
-- LLM provider clients all follow a similar pattern: they wrap provider SDKs and expose streaming generation methods. New providers should follow the existing client pattern (see `openai_client.py` as reference).
-- Model configuration is declarative in `api/config/generator.json`. Adding a new model means updating this JSON, not code.
-- The `@/*` path alias maps to `./src/*` (configured in `tsconfig.json`).
-- Python package mode is `false` in Poetry — the api directory is not an installable package, it's run as `python -m api.main`.
+- **Auth flow**: GitLab OAuth2 SSO → 8h JWT held in `AuthContext`. MCP clients use a 30d JWT from `/auth/mcp-token`. Both are accepted at `/mcp` via `Authorization: Bearer <token>`. WebSocket auth passes the JWT as a `?token=` query parameter (`_verify_ws_auth` in `websocket_wiki.py`), since browsers can't set WS headers.
+- **Permission model**: Frontend calls carry the user's token; the backend verifies against GitLab and caches the result in memory. Batch/MCP paths instead use `GITLAB_SERVICE_TOKEN`, which bypasses per-user checks — be careful not to leak service-token-scoped data into user-facing responses.
+- **Adding a model** is a `api/config/generator.json` edit, not a code change. Adding a *provider* means a new client following `openai_client.py`.
+- **Circular imports** are a live concern in `api/`. The codebase deliberately uses function-local imports (e.g. `from api.wiki_generator import _call_llm_inner` inside a function body) to break cycles. Keep that style when adding cross-module calls.
+- `@/*` maps to `./src/*` (`tsconfig.json`). Poetry `package-mode = false` — `api/` is not installable; always run it as `python -m api.main` from the project root.
