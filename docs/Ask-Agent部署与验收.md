@@ -22,6 +22,29 @@ npm run dev
 
 生产可按现有 Docker 构建方式部署。新增数据默认写入 `~/.adalflow/agent/`，已经位于原 Compose 的 `~/.adalflow` 挂载中；使用自定义 `AGENT_DATA_DIR` 时需挂载相应目录。
 
+### 中国大陆环境的构建源
+
+Docker 构建默认使用清华 PyPI 和 Debian 镜像，npm 沿用 npmmirror。Python 下载超时为 120 秒、重试次数为 5，APT 也设置了超时与重试。大陆服务器可直接运行：
+
+```bash
+docker compose build deepwiki
+```
+
+其他网络环境可覆盖源地址，例如使用官方源（保留发行版和签名校验不变）：
+
+```bash
+docker compose build \
+  --build-arg PYPI_INDEX_URL=https://pypi.org/simple \
+  --build-arg DEBIAN_MIRROR=https://deb.debian.org \
+  deepwiki
+```
+
+该参数同时用于安装 Poetry 构建工具和项目运行依赖。构建从已提交的 `poetry.lock` 导出依赖，校验下载哈希，不在镜像内重新执行 `poetry lock`。构建工具独立缓存，包下载使用 BuildKit cache，失败重试可以复用已下载内容。可额外用 `--build-arg PIP_DEFAULT_TIMEOUT=180` 或 `--build-arg PIP_RETRIES=8` 调整网络容忍度。
+
+镜像还预置 `cl100k_base`、`o200k_base` 分词数据，避免 AdalFlow/分词器首次导入时再联网下载。构建时按 tiktoken 内置 SHA-256 校验，默认从数据的官方 Azure 地址下载；如有内部镜像，可用 `--build-arg TIKTOKEN_ENCODINGS_BASE_URL=https://your-mirror/encodings` 覆盖。运行时缓存固定在 `/opt/tiktoken-cache`，不需要下载这些文件。NodeSource 的 Node.js 20 软件仓库目前保留官方地址，与 Debian 系统源分开。
+
+构建成功后，再执行 `docker compose up -d deepwiki` 才会让服务使用新镜像；只有 `git pull` 或重启旧容器不会应用新代码。服务器上的模型配置和数据挂载定制应保留。
+
 | 配置 | 默认值 | 作用 |
 |---|---|---|
 | `AGENT_ENABLED` | `true` | 关闭时新接口返回 503，经典问答与 Wiki 可继续使用 |

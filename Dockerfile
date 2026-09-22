@@ -27,15 +27,60 @@ RUN npm config set registry https://registry.npmmirror.com && \
 
 FROM python:3.11-slim AS py_deps
 WORKDIR /api
+ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_DEFAULT_TIMEOUT=120
+ARG PIP_RETRIES=5
+# Bootstrap tools have their own layer: application lock changes must not force
+# downloading Poetry again. The cache also survives interrupted builds.
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    python -m pip install --disable-pip-version-check \
+    --index-url "${PYPI_INDEX_URL}" --timeout "${PIP_DEFAULT_TIMEOUT}" --retries "${PIP_RETRIES}" \
+    poetry==2.0.1 poetry-plugin-export==1.9.0
 COPY api/pyproject.toml .
 COPY api/poetry.lock .
-RUN python -m pip install poetry==2.0.1 --no-cache-dir && \
-    poetry config virtualenvs.create true --local && \
-    poetry config virtualenvs.in-project true --local && \
-    poetry config virtualenvs.options.always-copy --local true && \
-    poetry lock && \
-    POETRY_MAX_WORKERS=10 poetry install --no-interaction --no-ansi --only main && \
-    poetry cache clear --all .
+# Export locally from the committed lock, then use the SAME index for runtime
+# packages. PIP_INDEX_URL alone would not redirect Poetry's own installer.
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    poetry check --lock && \
+    poetry export --format requirements.txt --only main --output /tmp/requirements.txt && \
+    python -m venv --copies /api/.venv && \
+    /api/.venv/bin/python -m pip install --disable-pip-version-check \
+    --index-url "${PYPI_INDEX_URL}" --timeout "${PIP_DEFAULT_TIMEOUT}" --retries "${PIP_RETRIES}" \
+    --no-deps --require-hashes --requirement /tmp/requirements.txt && \
+    /api/.venv/bin/python -m pip check
+
+# AdalFlow loads cl100k_base at import time. Ship tokenizers in the image so
+# starting the API never depends on downloading these files from Azure.
+ARG TIKTOKEN_ENCODINGS_BASE_URL=https://openaipublic.blob.core.windows.net/encodings
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
+RUN /api/.venv/bin/python - <<'PY'
+import os
+import time
+import requests
+import tiktoken
+import tiktoken.load
+
+base_url = os.environ["TIKTOKEN_ENCODINGS_BASE_URL"].rstrip("/")
+
+def download_encoding(original_url):
+    url = base_url + "/" + original_url.rsplit("/", 1)[-1]
+    for attempt in range(5):
+        try:
+            with requests.get(url, timeout=(15, 120)) as response:
+                response.raise_for_status()
+                return response.content
+        except requests.RequestException:
+            if attempt == 4:
+                raise
+            time.sleep(min(2 ** attempt, 10))
+
+# read_file_cached still uses the canonical URL as its cache key and checks
+# each encoding's SHA-256 supplied by the pinned tiktoken package.
+tiktoken.load.read_file = download_encoding
+for name in ("cl100k_base", "o200k_base"):
+    tiktoken.get_encoding(name)
+    print(f"Cached tokenizer: {name}", flush=True)
+PY
 
 # Use Python 3.11 as final image
 FROM python:3.11-slim
@@ -43,8 +88,11 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
+ARG DEBIAN_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
 # Install Node.js and npm
-RUN apt-get update && apt-get install -y \
+RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR%/}|g" /etc/apt/sources.list.d/debian.sources && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update && \
+    apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y \
     curl \
     gnupg \
     git \
@@ -52,8 +100,8 @@ RUN apt-get update && apt-get install -y \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update \
-    && apt-get install -y nodejs \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 update \
+    && apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 -o Acquire::https::Timeout=60 install -y nodejs \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -70,9 +118,11 @@ RUN if [ -n "${CUSTOM_CERT_DIR}" ]; then \
     fi
 
 ENV PATH="/opt/venv/bin:$PATH"
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
 
 # Copy Python dependencies
 COPY --from=py_deps /api/.venv /opt/venv
+COPY --from=py_deps /opt/tiktoken-cache /opt/tiktoken-cache
 COPY api/ ./api/
 COPY tools/ ./tools/
 
