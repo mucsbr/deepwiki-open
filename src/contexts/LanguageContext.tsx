@@ -2,7 +2,6 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { locales } from '@/i18n';
 
 type Messages = Record<string, any>;
 type LanguageContextType = {

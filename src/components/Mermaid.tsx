@@ -6,7 +6,7 @@ import mermaid from 'mermaid';
 mermaid.initialize({
   startOnLoad: true,
   theme: 'neutral',
-  securityLevel: 'loose',
+  securityLevel: 'strict',
   suppressErrorRendering: true,
   logLevel: 'error',
   maxTextSize: 100000, // Increase text size limit
@@ -389,12 +389,6 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled
         if (isMounted) {
           setError(`Failed to render diagram: ${errorMessage}`);
 
-          if (mermaidRef.current) {
-            mermaidRef.current.innerHTML = `
-              <div class="text-red-500 dark:text-red-400 text-xs mb-1">Syntax error in diagram</div>
-              <pre class="text-xs overflow-auto p-2 bg-gray-100 dark:bg-gray-800 rounded">${chart}</pre>
-            `;
-          }
         }
       }
     };
@@ -423,7 +417,7 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled
             図表レンダリングエラー
           </div>
         </div>
-        <div ref={mermaidRef} className="text-xs overflow-auto"></div>
+        <div ref={mermaidRef}><pre className="text-xs overflow-auto whitespace-pre-wrap">{chart}</pre></div>
         <div className="mt-3 text-xs text-[var(--muted)] tracking-tight">
           図表に構文エラーがあり、レンダリングできません。
         </div>

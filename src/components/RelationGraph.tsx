@@ -274,7 +274,7 @@ export default function RelationGraph({
   edgeFilters,
   onFocusRepo,
 }: RelationGraphProps) {
-  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [, setHoveredNodeId] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
 
   // Filter edges by type

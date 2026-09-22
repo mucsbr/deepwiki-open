@@ -1,0 +1,93 @@
+# Ask Agent 部署与验收
+
+## 架构与范围
+
+本实现采用 A 路线：Next.js Ask → 既有 FastAPI `/api/agent/*` → Deep Agents SDK → 已有索引与固定版本源码。
+
+没有引入官方 Agent Server、官方 UI 的 LangGraph HTTP 协议或 LangSmith 服务依赖。界面在原项目样式、登录上下文和 Markdown/Mermaid 上实现，包含历史会话、连续提问、工具进度、停止/继续、文档预览和下载。
+
+首版新 agent 适用于已配置 GitLab SSO 的平台与**已经索引且本地 clone 可用**的项目。Global Ask 严格使用选择的仓库，不自动追加其他索引项目。会话创建后仓库与 commit 固定；改变选区时，新建会话可使用新范围。GitHub、Bitbucket 等原有 Ask 保留经典问答入口。Wiki 的两条生成路径仍使用原有端点。
+
+## 安装与启动
+
+使用 Python 3.11+ 和项目 Dockerfile 对齐的 Node.js 20。Python 依赖及传递依赖已记录在 `api/poetry.lock`。
+
+```bash
+poetry install -C api
+# 在 Poetry 环境中，从仓库根目录启动：
+poetry --project api run python -m api.main
+npm install
+npm run dev
+```
+
+生产可按现有 Docker 构建方式部署。新增数据默认写入 `~/.adalflow/agent/`，已经位于原 Compose 的 `~/.adalflow` 挂载中；使用自定义 `AGENT_DATA_DIR` 时需挂载相应目录。
+
+| 配置 | 默认值 | 作用 |
+|---|---|---|
+| `AGENT_ENABLED` | `true` | 关闭时新接口返回 503，经典问答与 Wiki 可继续使用 |
+| `AGENT_PROVIDER` / `AGENT_MODEL` | 现有配置 | 新会话模型默认值；界面可以选择其他模型 |
+| `AGENT_DATA_DIR` | `~/.adalflow/agent` | 会话数据库、checkpoint 数据库、进程锁 |
+| `AGENT_MAX_CONCURRENT_RUNS` | `4` | 当前进程最多同时运行的分析数 |
+| `AGENT_RUN_TIMEOUT_SECONDS` | `900` | 单次执行时间预算，超时后可继续 |
+| `AGENT_CONTEXT_TOKENS` | `32000` | 上下文整理预算；应不大于实际模型输入限制，已知更小的模型限制优先 |
+
+模型适配覆盖 OpenAI-compatible、OpenRouter、DashScope、Google、Ollama、Azure 和 Bedrock。使用已有环境变量保存地址与密钥，浏览器不提交模型服务地址。框架能接入这些 provider 不代表所有模型都支持工具调用；须在实际代理上验证 `tools`、工具参数、`tool_calls` 与 `tool` 消息往返。没有正确工具调用能力的模型不能靠更改提示词补足。
+
+## 运行与恢复
+
+- 当前执行器适配单 Uvicorn worker（Linux/macOS）。同一数据目录的第二个 worker 会因进程锁启动失败，不可直接水平扩容。多实例需后续接共享队列与共享持久化存储。
+- POST 发起任务后，浏览器通过带 Bearer token 的 fetch SSE 订阅；连接断开不取消任务。事件写入数据库，重连通过 `after` 游标补取。
+- 服务正常关闭或异常重启后，未完成记录变为 interrupted；用户从历史会话点击继续，服务端重新校验权限并从 checkpoint 继续。不会持久化用户 GitLab token，也不会在后台自动复用过期身份。
+- 取消可以保留已经生成的部分结果；继续时恢复原轮次，不重复添加同一条用户消息。若模型调用失败，可在界面更换模型后继续。
+- checkpoint 恢复时，尚未完成的读取或模型调用可能重试。源码工具只读，文档按会话和文件名 upsert，避免重试生成重复文档。
+- 会话记录在 `sessions.sqlite3`，LangGraph 状态在 `checkpoints.sqlite3`；持久化状态含源码片段，应与原始仓库采用相同访问和备份策略。
+
+## 工具与证据
+
+`search_index` 只加载现有代码/Wiki PKL，不克隆、不拉取、不重新向量化。结果是候选；`read_source` 用会话固定 commit 的 Git blob 返回实际行号、内容 hash 与 GitLab 引用链接。工作区随后更新不会改变已固定版本。
+
+`search_source` 支持跨选定仓库的精确文本搜索；`list_source_files` 支持目录/文件模式定位。符号链接、路径越界、环境密钥文件、大文件和二进制文件不作为源码读出。每次源码/索引工具调用检查仓库权限，沿用现有 GitLab 权限缓存 TTL。
+
+`load_flow_guide` 按需提供入口定位、项目约定识别、上下游追踪、业务规则、失败分支与未解问题的分析方法。简单定位不强制生成完整流程。工具读取成功不能证明结论正确，输出必须区分源码支持、推断与未知。
+
+内置文件系统仅是会话 scratch，不连接服务器文件系统；没有主机 shell 或默认子 agent 执行权限。请求文档时通过 `save_document` 保存可下载产物，不能修改源仓库。
+
+## API
+
+- `GET /api/agent/config`：agent 默认模型。
+- `GET/POST /api/agent/sessions`：分页历史、创建固定范围的会话。
+- `GET /api/agent/sessions/{id}`：会话、执行记录与文档。
+- `POST /api/agent/sessions/{id}/runs`：发起一轮；`request_id` 提供幂等性。
+- `GET /api/agent/runs/{id}/events?after=...`：重放及订阅执行事件。
+- `POST /api/agent/runs/{id}/cancel`、`/resume`：停止与继续。
+
+所有接口要求 GitLab JWT。访问历史、文档、事件和恢复任务均检查会话归属与仓库权限。反向代理应关闭 SSE 缓冲并允许长连接；Next.js rewrite 已加入。
+
+## 工程验证与线上验收
+
+离线工程测试：
+
+```bash
+# -c 绕过仓库原 pytest.ini 的错误节名；测试不请求真实模型或 GitLab。
+python -m pytest -c /dev/null -o cache_dir=/tmp/deepwiki-agent-pytest tests/agent/test_agent.py -q
+npm run build
+```
+
+测试覆盖固定 commit、路径/权限隔离、已有索引过滤、幂等请求、Deep Agents 工具循环、跨轮上下文、取消与重启恢复，以及模拟 OpenAI-compatible 流式工具协议。
+
+`tests/agent/preview.py` 是仅供本机 UI 联调的测试服务：它使用临时 Git 仓库与确定性模型，不接真实代码、GitLab 或模型服务，不能挂入生产 API。浏览器联调应检查连续提问、工具进度、文档预览/下载、刷新恢复历史和手机布局。
+
+可复现的浏览器冒烟检查（需本机 Chrome 和可解析的 `playwright` 包）：
+
+```bash
+# 终端一：在安装了项目依赖及 pytest 的 Python 环境运行
+python -m uvicorn tests.agent.preview:app --host 127.0.0.1 --port 8125
+# 终端二：从仓库根目录运行
+SERVER_BASE_URL=http://127.0.0.1:8125 npx next dev --turbopack --port 3102
+# 终端三：PLAYWRIGHT_PACKAGE_PATH 可指定隔离安装的 playwright 包绝对路径
+node tests/agent/ui-smoke.cjs
+```
+
+此测试只连接本机 fixture，使用专用测试身份。截图写入系统临时目录。Node 25 的实验性 Web Storage 与当前 Next.js 15 开发环境存在兼容问题，优先使用项目的 Node 20；本机调试可用 `NODE_OPTIONS=--no-experimental-webstorage` 禁用该实验功能。
+
+线上仍需验收：真实模型代理的工具调用、真实索引规模下的时延与内存、不同用户仓库权限、断线后继续，以及真实业务入口的流程覆盖和引用质量。离线测试证明工程机制可用，不证明业务流程已被正确还原。

@@ -38,6 +38,10 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
+        source: '/api/agent/:path*',
+        destination: `${TARGET_SERVER_BASE_URL}/api/agent/:path*`,
+      },
+      {
         source: '/api/wiki_cache/:path*',
         destination: `${TARGET_SERVER_BASE_URL}/api/wiki_cache/:path*`,
       },

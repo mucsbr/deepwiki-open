@@ -1,4 +1,35 @@
 {
+  "agent": {
+    "title": "程式碼分析助手",
+    "subtitle": "定位功能、解釋規則、追蹤流程、產生文件。",
+    "history": "歷史對話",
+    "newChat": "新增對話",
+    "model": "模型",
+    "noHistory": "尚無歷史對話",
+    "repositories": "個儲存庫",
+    "loadMore": "載入更多",
+    "scope": "原始碼版本",
+    "scopeChanged": "此對話繼續使用已固定的儲存庫範圍；新增對話將採用目前選擇。",
+    "signIn": "請透過 GitLab 登入後使用。",
+    "reconnect": "重新連線",
+    "reconnecting": "正在重新連線，分析仍在背景執行……",
+    "empty": "可以先問某個功能在哪裡實作，再追問規則或完整流程。",
+    "progress": "分析進度",
+    "documents": "產生文件",
+    "download": "下載 Markdown",
+    "placeholder": "詢問此程式碼庫……",
+    "noRepos": "請先選擇已索引的儲存庫。",
+    "stop": "停止",
+    "send": "傳送",
+    "resume": "繼續分析",
+    "queued": "等待執行",
+    "running": "分析中",
+    "completed": "已完成",
+    "failed": "執行失敗",
+    "interrupted": "執行中斷",
+    "cancelled": "已停止",
+    "legacy": "傳統問答"
+  },
   "common": {
     "appName": "DeepWiki-Open",
     "tagline": "AI 驅動的文件",
@@ -128,4 +159,4 @@
     "existingProjects": "現有專案",
     "recentProjects": "最近專案"
   }
-} 
+}

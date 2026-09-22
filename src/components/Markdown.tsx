@@ -8,11 +8,13 @@ import Mermaid from './Mermaid';
 
 interface MarkdownProps {
   content: string;
+  allowHtml?: boolean;
 }
 
-const Markdown: React.FC<MarkdownProps> = ({ content }) => {
+const Markdown: React.FC<MarkdownProps> = ({ content, allowHtml = true }) => {
   // Define markdown components
   const MarkdownComponents: React.ComponentProps<typeof ReactMarkdown>['components'] = {
+    ...(!allowHtml ? { img: ({ alt }: { alt?: string }) => <span>{alt || ''}</span> } : {}),
     p({ children, ...props }: { children?: React.ReactNode }) {
       return <p className="mb-3 text-sm leading-relaxed dark:text-white" {...props}>{children}</p>;
     },
@@ -196,7 +198,8 @@ const Markdown: React.FC<MarkdownProps> = ({ content }) => {
     <div className="prose prose-base dark:prose-invert max-w-none px-2 py-4">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeRaw]}
+        rehypePlugins={allowHtml ? [rehypeRaw] : []}
+        skipHtml={!allowHtml}
         components={MarkdownComponents}
       >
         {content}

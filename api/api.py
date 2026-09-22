@@ -22,12 +22,13 @@ logger = logging.getLogger(__name__)
 
 # Import MCP server
 from api.mcp_server import mcp as mcp_server, get_authenticated_mcp_app
+from api.agent.router import router as agent_router, agent_lifespan
 
 
 @contextlib.asynccontextmanager
 async def lifespan(app):
     """Application lifespan: manages MCP session lifecycle."""
-    async with mcp_server.session_manager.run():
+    async with mcp_server.session_manager.run(), agent_lifespan(app):
         logger.info("MCP server session manager started")
         yield
     logger.info("MCP server session manager stopped")
@@ -174,6 +175,7 @@ app.include_router(gitlab_auth_router)
 
 # Register Admin routes
 app.include_router(admin_router)
+app.include_router(agent_router)
 
 # Mount MCP Server (Streamable HTTP) – wrapped with JWT authentication
 app.mount("/mcp", get_authenticated_mcp_app())

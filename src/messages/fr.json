@@ -1,4 +1,35 @@
 {
+  "agent": {
+    "title": "Assistant d’analyse de code",
+    "subtitle": "Locate features, explain rules, trace flows and create documents.",
+    "history": "Historique",
+    "newChat": "Nouvelle conversation",
+    "model": "Modèle",
+    "noHistory": "No conversations yet.",
+    "repositories": "dépôts",
+    "loadMore": "Charger plus",
+    "scope": "Version du code",
+    "scopeChanged": "This conversation keeps its source scope. Start a new conversation to use the current selection.",
+    "signIn": "Sign in with GitLab to use the agent.",
+    "reconnect": "Reconnect",
+    "reconnecting": "Reconnecting; analysis continues in the background…",
+    "empty": "Ask where a feature is implemented, then follow up about its rules or full flow.",
+    "progress": "Progression de l’analyse",
+    "documents": "Documents",
+    "download": "Télécharger le Markdown",
+    "placeholder": "Posez une question sur le code…",
+    "noRepos": "Select an indexed repository first.",
+    "stop": "Arrêter",
+    "send": "Envoyer",
+    "resume": "Reprendre l’analyse",
+    "queued": "En attente",
+    "running": "En cours",
+    "completed": "Terminé",
+    "failed": "Échec",
+    "interrupted": "Interrompu",
+    "cancelled": "Arrêté",
+    "legacy": "Questions classiques"
+  },
     "common": {
       "appName": "DeepWiki-Open",
       "tagline": "Documentation propulsée par l’IA",
@@ -140,4 +171,3 @@
       "recentProjects": "Projets récents"
     }
   }
-  

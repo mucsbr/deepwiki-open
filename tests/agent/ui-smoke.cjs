@@ -1,0 +1,46 @@
+const { chromium } = require(process.env.PLAYWRIGHT_PACKAGE_PATH || 'playwright');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const output = fs.mkdtempSync(path.join(os.tmpdir(), 'deepwiki-ui-smoke-'));
+const baseUrl = process.env.AGENT_UI_URL || 'http://127.0.0.1:3102';
+const assert = require('node:assert/strict');
+
+(async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+  const errors = [];
+  page.on('pageerror', error => { errors.push(error.stack || error.message); console.log('BROWSER ERROR', error.stack || error.message); });
+  await page.addInitScript(() => {
+    localStorage.setItem('deepwiki_jwt', 'agent-ui-fixture');
+    localStorage.setItem('language', 'zh');
+  });
+  await page.goto(`${baseUrl}/ask`);
+  await page.getByRole('heading', { name: '代码分析助手' }).waitFor({ timeout: 60000 });
+  const input = page.getByRole('textbox');
+  await input.fill('订单提交功能在哪里实现？');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByText('已完成', { exact: true }).waitFor({ timeout: 30000 });
+  await input.fill('把刚才的流程整理成文档');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByRole('button', { name: '订单提交流程.md', exact: true }).waitFor({ timeout: 30000 });
+  await page.getByRole('button', { name: '订单提交流程.md', exact: true }).click();
+  await page.getByRole('heading', { name: '订单提交流程', exact: true }).waitFor();
+  assert.equal(await page.locator('article').count(), 2, 'follow-up must keep both turns');
+  await page.screenshot({ path: path.join(output, 'desktop.png'), fullPage: true });
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: '下载 Markdown' }).click();
+  assert.equal((await download).suggestedFilename(), '订单提交流程.md');
+  await page.reload();
+  await page.getByRole('button', { name: '历史会话', exact: true }).click();
+  await page.getByRole('button').filter({ hasText: '订单提交功能在哪里实现' }).first().click();
+  await page.getByRole('button', { name: '订单提交流程.md', exact: true }).waitFor();
+  assert.equal(await page.locator('article').count(), 2, 'history must survive reload');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(output, 'mobile.png'), fullPage: true });
+  assert(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'mobile must not overflow');
+  assert.deepEqual(errors, []);
+  console.log('PASS: two turns, tool execution, saved document, download, reload/history, mobile, no page errors');
+  console.log('Screenshots:', output);
+  await browser.close();
+})().catch(error => { console.error(error); process.exit(1); });
