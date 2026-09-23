@@ -118,6 +118,18 @@
     "copyright": "DeepWiki - 为代码仓库提供AI驱动的文档"
   },
   "ask": {
+    "scopeTitle": "搜索范围",
+    "scopeSearch": "搜索仓库或分组路径…",
+    "scopeSelectAll": "全选",
+    "scopeClearAll": "清空",
+    "scopeSelectMatches": "选择匹配项",
+    "scopeClearMatches": "清除匹配项",
+    "scopeGroup": "选择分组",
+    "scopeExpand": "展开",
+    "scopeCollapse": "收起",
+    "scopeEmpty": "暂无已索引的仓库。",
+    "scopeNoMatches": "没有匹配的仓库。",
+    "scopeMatchingCount": "匹配 {count} 个仓库",
     "placeholder": "询问关于此仓库的问题...",
     "askButton": "提问",
     "deepResearch": "深度研究",

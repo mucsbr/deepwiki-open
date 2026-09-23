@@ -116,6 +116,18 @@
     "copyright": "DeepWiki - 為程式碼儲存庫提供 AI 驅動的文件"
   },
   "ask": {
+    "scopeTitle": "搜尋範圍",
+    "scopeSearch": "搜尋儲存庫或群組路徑…",
+    "scopeSelectAll": "全選",
+    "scopeClearAll": "清空",
+    "scopeSelectMatches": "選取符合項目",
+    "scopeClearMatches": "清除符合項目",
+    "scopeGroup": "選取群組",
+    "scopeExpand": "展開",
+    "scopeCollapse": "收合",
+    "scopeEmpty": "沒有已索引的儲存庫。",
+    "scopeNoMatches": "沒有符合的儲存庫。",
+    "scopeMatchingCount": "符合 {count} 個儲存庫",
     "placeholder": "詢問關於此儲存庫的問題...",
     "askButton": "提問",
     "deepResearch": "深度研究",

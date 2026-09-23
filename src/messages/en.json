@@ -127,6 +127,18 @@
     "copyright": "DeepWiki - AI-powered documentation for code repositories"
   },
   "ask": {
+    "scopeTitle": "Search Scope",
+    "scopeSearch": "Search repository or group path…",
+    "scopeSelectAll": "Select all",
+    "scopeClearAll": "Clear all",
+    "scopeSelectMatches": "Select matches",
+    "scopeClearMatches": "Clear matches",
+    "scopeGroup": "Select group",
+    "scopeExpand": "Expand",
+    "scopeCollapse": "Collapse",
+    "scopeEmpty": "No indexed repositories found.",
+    "scopeNoMatches": "No repositories match your search.",
+    "scopeMatchingCount": "{count} matching repositories",
     "placeholder": "Ask a question about this repository...",
     "askButton": "Ask",
     "deepResearch": "Deep Research",

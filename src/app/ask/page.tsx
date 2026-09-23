@@ -9,6 +9,7 @@ import {
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import Ask from '@/components/Ask';
+import RepositoryScopePicker from '@/components/RepositoryScopePicker';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import type RepoInfo from '@/types/repoinfo';
@@ -60,26 +61,6 @@ export default function GlobalAskPage() {
       fetchProjects();
     }
   }, [isAuthenticated, fetchProjects]);
-
-  const toggleRepo = (path: string) => {
-    setSelectedRepos((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  };
-
-  const selectAll = () => {
-    const allPaths = projects
-      .filter((p) => p.index_status === 'indexed')
-      .map((p) => p.path_with_namespace);
-    setSelectedRepos(new Set(allPaths));
-  };
-
-  const selectNone = () => {
-    setSelectedRepos(new Set());
-  };
 
   // Create a "global" RepoInfo placeholder
   const globalRepoInfo: RepoInfo = {
@@ -138,62 +119,8 @@ export default function GlobalAskPage() {
 
       <main className="max-w-4xl mx-auto space-y-4">
         {/* Repository selector */}
-        <div className="glass-card p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-medium text-[var(--foreground)]">
-              Search Scope ({selectedRepos.size}/{indexedProjects.length} repos)
-            </h2>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={selectAll}
-                className="text-xs text-[var(--accent-primary)] hover:underline"
-              >
-                Select All
-              </button>
-              <span className="text-xs text-[var(--muted)]">|</span>
-              <button
-                onClick={selectNone}
-                className="text-xs text-[var(--accent-primary)] hover:underline"
-              >
-                None
-              </button>
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="flex justify-center py-4">
-              <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-[var(--accent-primary)]"></div>
-            </div>
-          ) : indexedProjects.length === 0 ? (
-            <p className="text-sm text-[var(--muted)]">No indexed repositories found.</p>
-          ) : (
-            <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
-              {indexedProjects.map((p) => {
-                const isSelected = selectedRepos.has(p.path_with_namespace);
-                const shortName = p.path_with_namespace.split('/').pop() || p.path_with_namespace;
-                return (
-                  <button
-                    key={p.path_with_namespace}
-                    onClick={() => toggleRepo(p.path_with_namespace)}
-                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                      isSelected
-                        ? 'bg-[var(--accent-primary)]/10 border-[var(--accent-primary)]/30 text-[var(--accent-primary)]'
-                        : 'bg-[var(--background)]/50 border-[var(--border-color)] text-[var(--muted)]'
-                    }`}
-                    title={p.path_with_namespace}
-                  >
-                    {shortName}
-                    {isSelected && (
-                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
+        <RepositoryScopePicker projects={indexedProjects} selectedRepos={selectedRepos}
+          setSelectedRepos={setSelectedRepos} loading={loading} />
 
         {/* Ask component */}
         <div className="glass-card overflow-hidden">
