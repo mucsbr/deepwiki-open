@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
 from urllib.parse import quote
 
@@ -138,6 +139,18 @@ class BatchIndexer:
                     access_token=self.service_token,
                     pull=True,
                 ),
+            )
+
+            # An empty or incomplete clone can still complete embedding with no
+            # documents. Do not advertise it as usable by Ask Agent.
+            from adalflow.utils import get_adalflow_default_root_path
+            from api.agent.repositories import resolve_repository
+
+            await asyncio.to_thread(
+                resolve_repository,
+                path_with_ns,
+                self.gitlab_url,
+                Path(get_adalflow_default_root_path()),
             )
 
             repo_path = quote(path_with_ns, safe="")

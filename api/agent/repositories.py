@@ -102,20 +102,44 @@ def resolve_repository(
     root = container / project.replace(".git", "").replace("/", "_")
     if root.is_symlink() or not root.is_dir() or root.resolve().parent != container:
         raise ValueError(f"Source clone for {project} is not available on this server.")
-    remote = git(root, "remote", "get-url", "origin").decode().strip()
+    try:
+        remote = git(root, "remote", "get-url", "origin").decode().strip()
+    except ValueError as exc:
+        raise ValueError(
+            f"{project}: local clone has no readable origin remote."
+        ) from exc
     parsed = urlparse(remote)
     # Historic clones may have userinfo. Never expose it or use it in a command.
     clean_remote = parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[-1]).geturl()
-    if project_path(clean_remote, gitlab_url) != project:
+    try:
+        remote_project = project_path(clean_remote, gitlab_url)
+    except ValueError as exc:
         raise ValueError(
-            "Repository storage name collision; the clone does not match the selected project."
+            f"{project}: local clone origin is not a valid project on this GitLab instance."
+        ) from exc
+    if remote_project != project:
+        raise ValueError(
+            f"{project}: repository storage collision; local clone origin "
+            "does not match the selected project."
         )
-    revision = commit or git(root, "rev-parse", "HEAD").decode().strip()
+    try:
+        revision = commit or git(
+            root, "rev-parse", "--verify", "HEAD^{commit}"
+        ).decode().strip()
+    except ValueError as exc:
+        raise ValueError(
+            f"{project}: local clone has no readable HEAD commit (empty or incomplete repository)."
+        ) from exc
     if len(revision) not in {40, 64} or any(
         c not in "0123456789abcdef" for c in revision
     ):
-        raise ValueError("Invalid source revision.")
-    git(root, "cat-file", "-e", f"{revision}^{{commit}}")
+        raise ValueError(f"{project}: invalid source revision.")
+    try:
+        git(root, "cat-file", "-e", f"{revision}^{{commit}}")
+    except ValueError as exc:
+        raise ValueError(
+            f"{project}: pinned commit {revision[:12]} is missing from the local clone."
+        ) from exc
     return Repository(project, f"{gitlab_url.rstrip('/')}/{project}", revision, root)
 
 

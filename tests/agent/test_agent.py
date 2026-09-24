@@ -80,6 +80,73 @@ def test_project_validation_and_collision(repository):
         resolve_repository("group/demo", "https://gitlab.example", root)
 
 
+def test_create_scope_names_all_repositories_without_commits(tmp_path, monkeypatch):
+    from api.agent.access import Access
+
+    names = ["group/empty-one", "group/empty-two"]
+    for name in names:
+        root = tmp_path / "repos" / name.replace("/", "_")
+        root.mkdir(parents=True)
+        run_git(root, "init", "-q")
+        run_git(root, "remote", "add", "origin", f"https://gitlab.example/{name}.git")
+
+    async def allowed(*_args):
+        return True
+
+    monkeypatch.setattr("api.config.GITLAB_URL", "https://gitlab.example")
+    monkeypatch.setattr("api.gitlab_permission.check_repo_access", allowed)
+    monkeypatch.setattr(
+        "api.metadata_store.get_all_indexed_projects",
+        lambda: {name: {"status": "indexed"} for name in names},
+    )
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            Access(tmp_path).create_scope(
+                names,
+                {"gitlab_user_id": 1, "gitlab_access_token": "fixture-token"},
+            )
+        )
+    assert error.value.status_code == 409
+    assert all(name in error.value.detail for name in names)
+    assert error.value.detail.count("no readable HEAD commit") == 2
+
+
+def test_reindex_does_not_mark_empty_clone_indexed(tmp_path, monkeypatch):
+    from api.batch_indexer import BatchIndexer
+
+    name = "group/empty"
+    root = tmp_path / "repos" / "group_empty"
+    root.mkdir(parents=True)
+    run_git(root, "init", "-q")
+    run_git(root, "remote", "add", "origin", "https://gitlab.example/group/empty.git")
+    monkeypatch.setattr(
+        "adalflow.utils.get_adalflow_default_root_path", lambda: str(tmp_path)
+    )
+    monkeypatch.setattr(
+        "api.data_pipeline.DatabaseManager.prepare_database",
+        lambda *_args, **_kwargs: None,
+    )
+    statuses = []
+    monkeypatch.setattr(
+        "api.metadata_store.set_project_metadata",
+        lambda **kwargs: statuses.append(kwargs["status"]),
+    )
+
+    project = {
+        "path_with_namespace": name,
+        "id": 1,
+        "last_activity_at": "",
+        "http_url_to_repo": "https://gitlab.example/group/empty.git",
+    }
+    result = asyncio.run(
+        BatchIndexer("https://gitlab.example", "fixture-token", []).reindex_project(
+            project
+        )
+    )
+    assert result is False
+    assert statuses == ["error"]
+
+
 def test_storage_idempotency_and_recovery(tmp_path):
     store = Store(tmp_path / "app.db")
     session = store.create_session("1", [], "en")

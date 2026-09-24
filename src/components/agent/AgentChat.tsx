@@ -95,7 +95,7 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
     {scopeChanged && <p role="status" className="rounded-lg bg-amber-500/10 p-3 text-sm">{t('scopeChanged', 'This conversation keeps its source scope. Start a new conversation to use the current selection.')}</p>}
     {!token && <p role="alert">{t('signIn', 'Sign in with GitLab to use the agent.')}</p>}
     {chat.error && <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm">
-      <p>{chat.error}</p>
+      <p className="whitespace-pre-wrap">{chat.error}</p>
       {chat.session && <button className="mt-2 underline" onClick={() => void chat.open(chat.session!.id)}>{t('reconnect', 'Reconnect')}</button>}
     </div>}
     {chat.reconnecting && <p role="status" className="text-xs text-[var(--muted)]">{t('reconnecting', 'Reconnecting; the analysis continues in the background…')}</p>}

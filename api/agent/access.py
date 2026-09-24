@@ -38,14 +38,14 @@ class Access:
                 403, "A GitLab SSO session with repository access is required."
             )
         # Check every repository, including global/additional repositories.
+        denied = []
         for project in projects:
             if not await check_repo_access(
                 token, project, GITLAB_URL, user.get("gitlab_user_id")
             ):
-                raise HTTPException(
-                    403,
-                    "Access to a repository in this conversation is no longer available.",
-                )
+                denied.append(project)
+        if denied:
+            raise HTTPException(403, "No GitLab access to: " + ", ".join(denied))
 
     async def create_scope(self, selected: list[str], user: dict) -> list[dict]:
         from api.config import GITLAB_URL
@@ -63,19 +63,35 @@ class Access:
             raise HTTPException(422, "Select at least one indexed repository.")
         await self.check(projects, user)
         metadata = get_all_indexed_projects()
-        if any(
-            metadata.get(project, {}).get("status") != "indexed" for project in projects
-        ):
+        not_indexed = [
+            project
+            for project in projects
+            if metadata.get(project, {}).get("status") != "indexed"
+        ]
+        if not_indexed:
             raise HTTPException(
-                409, "All selected repositories must already be indexed."
+                409, "These repositories are not indexed: " + ", ".join(not_indexed)
             )
+
+        def resolve_selected():
+            repos, failures = [], []
+            for project in projects:
+                try:
+                    repos.append(
+                        resolve_repository(project, GITLAB_URL, self.data_root).public()
+                    )
+                except ValueError as exc:
+                    failures.append(str(exc))
+            if failures:
+                raise ValueError(
+                    "Selected repositories cannot be read:\n"
+                    + "\n".join(f"- {failure}" for failure in failures)
+                    + "\nReindex these repositories, or remove them from Search Scope."
+                )
+            return repos
+
         try:
-            repos = await asyncio.to_thread(
-                lambda: [
-                    resolve_repository(project, GITLAB_URL, self.data_root).public()
-                    for project in projects
-                ]
-            )
+            repos = await asyncio.to_thread(resolve_selected)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return repos
