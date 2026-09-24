@@ -143,7 +143,6 @@ async def start_run(sid: UUID, body: NewRun, request: Request, user: AgentUser):
         return existing
     if not body.message.strip():
         raise HTTPException(422, "Message cannot be empty")
-    repos = await rt.access.readers(session["repos"], user)
     try:
         provider, model = select_model(body.provider, body.model)
         adapter = await asyncio.to_thread(rt.model_factory, provider, model)
@@ -154,7 +153,7 @@ async def start_run(sid: UUID, body: NewRun, request: Request, user: AgentUser):
         run = rt.store.create_run(
             str(sid), str(body.request_id), body.message.strip(), provider, model
         )
-        rt.launch(run, session, repos, user, adapter)
+        rt.launch(run, session, None, user, adapter)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return run
@@ -170,7 +169,7 @@ async def resume_run(
         return run
     if run["status"] not in RESUMABLE:
         raise HTTPException(409, "Only unfinished runs can be resumed")
-    repos = await rt.access.readers(session["repos"], user)
+    repos = await rt.access.readers(run["repos"], user) if run["repos"] else None
     try:
         provider, model = run["provider"], run["model"]
         if body and (body.provider or body.model):

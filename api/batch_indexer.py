@@ -37,6 +37,7 @@ class BatchIndexer:
         self.gitlab_url = gitlab_url.rstrip("/")
         self.service_token = service_token
         self.group_ids = group_ids
+        self._group_scan_complete = True
 
     async def list_group_projects(self, group_id: int) -> List[dict]:
         """
@@ -61,6 +62,7 @@ class BatchIndexer:
                         timeout=30.0,
                     )
                     if resp.status_code != 200:
+                        self._group_scan_complete = False
                         logger.error(
                             "Error listing projects for group %d (page %d): %s",
                             group_id,
@@ -77,21 +79,82 @@ class BatchIndexer:
                     page += 1
 
                     if page > 100:
+                        self._group_scan_complete = False
                         logger.warning("Pagination safety limit reached for group %d", group_id)
                         break
                 except Exception as exc:
+                    self._group_scan_complete = False
                     logger.error("Error listing projects for group %d: %s", group_id, exc)
                     break
 
         return projects
 
+    async def audit_unlisted_projects(self, seen_paths: set[str]) -> int:
+        """Hide stale indexed entries only after a complete group scan.
+
+        A 403/404 means the indexer cannot currently access the project; it
+        does not prove deletion, so retain the clone and metadata.
+        """
+        from api.metadata_store import get_all_indexed_projects, set_project_metadata
+
+        if not self.group_ids or not self._group_scan_complete:
+            return 0
+        metadata = get_all_indexed_projects()
+        candidates = [
+            (name, item)
+            for name, item in metadata.items()
+            if item.get("status") == "indexed"
+            and name not in seen_paths
+            and item.get("project_id")
+        ]
+        unavailable = 0
+        async with httpx.AsyncClient(verify=False, timeout=15) as client:
+            for name, item in candidates:
+                try:
+                    response = await client.get(
+                        f"{self.gitlab_url}/api/v4/projects/{item['project_id']}",
+                        headers={"PRIVATE-TOKEN": self.service_token},
+                    )
+                except httpx.HTTPError as exc:
+                    logger.warning("Could not audit project %s: %s", name, type(exc).__name__)
+                    continue
+                inaccessible = response.status_code in {403, 404}
+                if response.status_code == 200:
+                    try:
+                        inaccessible = response.json().get("path_with_namespace") != name
+                    except (ValueError, AttributeError):
+                        logger.warning("GitLab returned invalid project data for %s", name)
+                        continue
+                if not inaccessible:
+                    continue
+                set_project_metadata(
+                    project_path=name,
+                    project_id=item["project_id"],
+                    last_activity_at=item.get("last_activity_at", ""),
+                    repo_path=item.get("repo_path", ""),
+                    status="unavailable",
+                )
+                unavailable += 1
+                logger.info("Marked project unavailable for indexing: %s", name)
+        return unavailable
+
     def should_reindex(self, project: dict) -> bool:
-        """Check if a project needs (re-)indexing based on last_activity_at."""
+        """Reindex changed or locally incomplete projects."""
+        from adalflow.utils import get_adalflow_default_root_path
+        from api.agent.repositories import resolve_repository
         from api.metadata_store import needs_reindex
 
         path = project.get("path_with_namespace", "")
         last_activity = project.get("last_activity_at", "")
-        return needs_reindex(path, last_activity)
+        if needs_reindex(path, last_activity):
+            return True
+        root = Path(get_adalflow_default_root_path())
+        try:
+            repo = resolve_repository(path, self.gitlab_url, root)
+        except ValueError:
+            return True
+        index_path = root / "databases" / f"{repo.root.name}.pkl"
+        return not index_path.is_file() or index_path.stat().st_size == 0
 
     async def reindex_project(
         self,
@@ -108,30 +171,39 @@ class BatchIndexer:
         from api.metadata_store import set_project_metadata
 
         path_with_ns = project.get("path_with_namespace", "")
-        project_id = project.get("id", 0)
+        project_id = int(project.get("id") or 0)
         last_activity = project.get("last_activity_at", "")
         http_url = project.get("http_url_to_repo", "")
 
-        if not http_url:
-            logger.warning("No http_url_to_repo for project %s, skipping", path_with_ns)
-            return False
-
         logger.info("Reindexing project: %s (id=%d)", path_with_ns, project_id)
 
-        # When force re-indexing, remove old pkl to avoid deserialization errors
-        if force:
-            from api.wiki_generator import _compute_repo_dir_name
-            repo_dir_name = _compute_repo_dir_name(http_url, "gitlab")
-            root_path = os.path.expanduser(os.path.join("~", ".adalflow"))
-            pkl_path = os.path.join(root_path, "databases", f"{repo_dir_name}.pkl")
-            if os.path.exists(pkl_path):
-                logger.info("Force mode: removing old database %s", pkl_path)
-                os.remove(pkl_path)
-
         try:
+            # Persist an in-progress state before changing the clone or index.
+            # A process crash must not leave the old 'indexed' claim in place.
+            set_project_metadata(
+                project_path=path_with_ns,
+                project_id=project_id,
+                last_activity_at=last_activity,
+                repo_path=quote(path_with_ns, safe=""),
+                status="indexing",
+            )
+            if not http_url:
+                raise ValueError("GitLab project has no clone URL.")
+
+            # When force re-indexing, remove old pkl to avoid deserialization errors.
+            if force:
+                from api.wiki_generator import _compute_repo_dir_name
+
+                repo_dir_name = _compute_repo_dir_name(http_url, "gitlab")
+                root_path = os.path.expanduser(os.path.join("~", ".adalflow"))
+                pkl_path = os.path.join(root_path, "databases", f"{repo_dir_name}.pkl")
+                if os.path.exists(pkl_path):
+                    logger.info("Force mode: removing old database %s", pkl_path)
+                    os.remove(pkl_path)
+
             db_manager = DatabaseManager()
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
+            documents = await loop.run_in_executor(
                 None,
                 lambda: db_manager.prepare_database(
                     repo_url_or_path=http_url,
@@ -146,12 +218,21 @@ class BatchIndexer:
             from adalflow.utils import get_adalflow_default_root_path
             from api.agent.repositories import resolve_repository
 
-            await asyncio.to_thread(
+            repo = await asyncio.to_thread(
                 resolve_repository,
                 path_with_ns,
                 self.gitlab_url,
                 Path(get_adalflow_default_root_path()),
             )
+            if not documents or not any(
+                getattr(doc, "vector", None) is not None
+                and len(getattr(doc, "vector")) > 0
+                for doc in documents
+            ):
+                raise ValueError("No usable embeddings were produced for this repository.")
+            index_file = Path(get_adalflow_default_root_path()) / "databases" / f"{repo.root.name}.pkl"
+            if not index_file.is_file() or index_file.stat().st_size == 0:
+                raise ValueError("Repository index file is missing or empty.")
 
             repo_path = quote(path_with_ns, safe="")
             set_project_metadata(
@@ -439,12 +520,17 @@ class BatchIndexer:
         errors = 0
 
         # First pass: collect all projects to know the total count
+        self._group_scan_complete = True
         all_projects = []
         for group_id in self.group_ids:
             logger.info("Processing group %d ...", group_id)
             projects = await self.list_group_projects(group_id)
             logger.info("Found %d projects in group %d", len(projects), group_id)
             all_projects.extend(projects)
+
+        unavailable = await self.audit_unlisted_projects(
+            {project.get("path_with_namespace", "") for project in all_projects}
+        )
 
         grand_total = len(all_projects)
         current = 0
@@ -498,6 +584,7 @@ class BatchIndexer:
             "indexed": indexed,
             "skipped": skipped,
             "errors": errors,
+            "unavailable": unavailable,
         }
         logger.info("Batch indexing complete: %s", summary)
         return summary

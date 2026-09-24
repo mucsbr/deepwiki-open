@@ -99,6 +99,10 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       {chat.session && <button className="mt-2 underline" onClick={() => void chat.open(chat.session!.id)}>{t('reconnect', 'Reconnect')}</button>}
     </div>}
     {chat.reconnecting && <p role="status" className="text-xs text-[var(--muted)]">{t('reconnecting', 'Reconnecting; the analysis continues in the background…')}</p>}
+    {chat.refresh && chat.refresh.phase !== 'ready' && <p role="status" className="text-xs text-[var(--muted)]">
+      {chat.refresh.phase === 'updating' ? t('updatingCode', 'Updating code and index') : t('checkingCode', 'Checking GitLab for new code')}
+      {chat.refresh.repo && ` · ${chat.refresh.repo}`}
+    </p>}
 
     <div className="space-y-5" aria-live="polite">
       {!chat.session?.runs.length && <div className="rounded-xl border border-dashed border-[var(--border-color)] p-6 text-sm text-[var(--muted)]">
@@ -107,6 +111,10 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       {chat.session?.runs.map(run => <article key={run.id} className="space-y-3">
         <p className="whitespace-pre-wrap rounded-xl bg-[var(--accent-primary)]/10 p-3 text-sm">{run.message}</p>
         <div className="px-1"><Markdown content={run.answer} allowHtml={false} /></div>
+        {!!run.repos?.length && <details className="text-xs text-[var(--muted)]">
+          <summary className="cursor-pointer">{t('runSource', 'Source used for this answer')} · {run.repos.length} {t('repositories', 'repositories')}</summary>
+          <ul className="mt-2 space-y-1">{run.repos.map(repo => <li key={repo.project}>{repo.project} <code>{repo.commit.slice(0, 12)}</code></li>)}</ul>
+        </details>}
         <div className="flex items-center gap-2 text-xs text-[var(--muted)]">
           {isActive(run.status) && <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--accent-primary)]" />}
           <span>{t(run.status, run.status)}</span><span>· {run.provider} / {run.model}</span>

@@ -10,13 +10,23 @@ from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
+from fastapi import HTTPException
 from langchain.agents.middleware import (
     AgentMiddleware,
     ModelCallLimitMiddleware,
     TodoListMiddleware,
 )
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.errors import GraphRecursionError
 
 from .access import Access
 from .models import build_model
@@ -26,6 +36,26 @@ from .store import ACTIVE, Store
 from .tools import make_tools
 
 logger = logging.getLogger(__name__)
+
+SOURCE_TOOLS = frozenset(
+    {
+        "list_repositories",
+        "list_source_files",
+        "search_source",
+        "read_source",
+        "search_index",
+        "load_flow_guide",
+        "save_document",
+        "write_todos",
+    }
+)
+RESEARCH_MODEL_CALLS = 18
+FINALIZE_PROMPT = (
+    "The investigation budget is exhausted. Answer now from the source evidence "
+    "already collected. Cite verified source lines, clearly identify unresolved "
+    "steps, and say when a required backend repository is outside the selected "
+    "scope. Do not call any more tools or claim an end-to-end flow without evidence."
+)
 
 
 def text_content(content) -> str:
@@ -52,14 +82,30 @@ def visible_text(text: str) -> str:
 
 
 class AnalysisBoundary(AgentMiddleware):
-    """Keep the first release single-agent and bound scratch/tool payloads."""
+    """Expose only source tools and require a final answer after bounded research."""
+
+    def __init__(self):
+        super().__init__()
+        self.model_calls = 0
 
     async def awrap_model_call(self, request, handler):
+        self.model_calls += 1
         tools = [
             t
             for t in request.tools
-            if getattr(t, "name", "") not in {"task", "execute"}
+            if getattr(t, "name", "") in SOURCE_TOOLS
         ]
+        if self.model_calls > RESEARCH_MODEL_CALLS:
+            prompt = request.system_message.text if request.system_message else ""
+            return await handler(
+                request.override(
+                    tools=[],
+                    tool_choice=None,
+                    system_message=SystemMessage(
+                        content=f"{prompt}\n\n{FINALIZE_PROMPT}"
+                    ),
+                )
+            )
         return await handler(request.override(tools=tools))
 
     async def awrap_tool_call(self, request, handler):
@@ -67,11 +113,14 @@ class AnalysisBoundary(AgentMiddleware):
 
         call = request.tool_call
         if (
-            call["name"] in {"task", "execute"}
+            call["name"] not in SOURCE_TOOLS
             or len(json.dumps(call.get("args", {}))) > 250_000
         ):
             return ToolMessage(
-                content="Tool is outside this analysis task's scope or payload limit.",
+                content=(
+                    "Tool unavailable for source analysis. Use search_source, "
+                    "read_source or search_index."
+                ),
                 tool_call_id=call["id"],
                 status="error",
             )
@@ -170,10 +219,24 @@ class Runtime:
         answer, last_emit, current_model_run = "", 0.0, None
         try:
             self.store.set_status(rid, "running")
+            if repos is None:
+                async with asyncio.timeout(self.timeout):
+                    repos = await self.access.refresh_readers(
+                        session["repos"],
+                        user,
+                        on_progress=lambda name, status: self.store.event(
+                            rid, "refresh", {"repo": name, "phase": status}
+                        ),
+                    )
+            if not run.get("repos"):
+                scope = [repo.public() for repo in repos]
+                self.store.set_run_repos(rid, scope)
+                self.store.event(rid, "source_scope", {"repos": scope})
+                session = {**session, "repos": scope}
             graph = self.create_graph(run, session, repos, user, model)
             config = {
                 "configurable": {"thread_id": session["id"]},
-                "recursion_limit": 100,
+                "recursion_limit": 200,
             }
             snapshot = await graph.aget_state(config)
             already_submitted = any(
@@ -264,6 +327,23 @@ class Runtime:
                 answer=visible_text(answer),
                 error="Run time limit reached. Resume to continue.",
             )
+        except HTTPException as exc:
+            self.store.set_status(
+                rid,
+                "failed",
+                answer=visible_text(answer),
+                error=str(exc.detail),
+            )
+        except (GraphRecursionError, ModelCallLimitExceededError):
+            self.store.set_status(
+                rid,
+                "interrupted",
+                answer=visible_text(answer),
+                error=(
+                    "Analysis kept requesting tools without a final answer. "
+                    "Review the selected repositories, then resume or narrow the question."
+                ),
+            )
         except Exception as exc:  # noqa: BLE001 -- background runs must persist terminal failure
             logger.warning("Ask run %s failed (%s)", rid, type(exc).__name__)
             self.store.set_status(
@@ -291,15 +371,24 @@ class Runtime:
         tools = make_tools(
             SourceReader(repos), self.data_root, self.store, run, authorize
         )
+        backend = StateBackend()
         return create_deep_agent(
             model=model,
             tools=tools,
-            backend=StateBackend(),
-            system_prompt=SYSTEM_PROMPT.format(language=session["language"]),
+            backend=backend,
+            system_prompt=SYSTEM_PROMPT.format(
+                language=session["language"],
+                revisions="\n".join(
+                    f"- {repo.project} @ {repo.commit}" for repo in repos
+                ),
+            ),
             middleware=[
+                # Deep Agents needs read_file internally for summarized state;
+                # AnalysisBoundary keeps it invisible to the model.
+                FilesystemMiddleware(backend=backend, tools=["read_file"]),
                 AnalysisBoundary(),
                 TodoListMiddleware(),
-                ModelCallLimitMiddleware(run_limit=40, exit_behavior="error"),
+                ModelCallLimitMiddleware(run_limit=24, exit_behavior="error"),
             ],
             checkpointer=self.checkpointer,
             name="deepwiki_ask",

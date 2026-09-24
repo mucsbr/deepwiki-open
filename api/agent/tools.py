@@ -35,7 +35,7 @@ def make_tools(reader: SourceReader, data_root: Path, store, run: dict, authoriz
 
     @tool
     async def list_repositories() -> str:
-        """List the authorized repositories and fixed commit revisions in this conversation."""
+        """List authorized repositories and source revisions for this question."""
         return await call(lambda: [r.public() for r in reader.repos.values()])
 
     @tool

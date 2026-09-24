@@ -5,9 +5,12 @@ Manages metadata about indexed (vectorized) projects.
 Stored as JSON at ~/.adalflow/metadata/index_metadata.json
 """
 
+import fcntl
 import json
 import logging
 import os
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -23,7 +26,7 @@ def _ensure_dir() -> None:
     os.makedirs(METADATA_DIR, exist_ok=True)
 
 
-def _load() -> dict:
+def _load(*, strict: bool = False) -> dict:
     _ensure_dir()
     if not os.path.exists(METADATA_FILE):
         return {"projects": {}}
@@ -32,16 +35,36 @@ def _load() -> dict:
             return json.load(f)
     except Exception as e:
         logger.error("Failed to load metadata: %s", e)
+        if strict:
+            raise
         return {"projects": {}}
 
 
 def _save(data: dict) -> None:
     _ensure_dir()
+    fd, temporary = tempfile.mkstemp(prefix=".index_metadata.", dir=METADATA_DIR)
     try:
-        with open(METADATA_FILE, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error("Failed to save metadata: %s", e)
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.exists(METADATA_FILE):
+            os.chmod(temporary, os.stat(METADATA_FILE).st_mode & 0o777)
+        os.replace(temporary, METADATA_FILE)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+@contextmanager
+def _write_lock():
+    _ensure_dir()
+    with open(METADATA_FILE + ".lock", "a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def get_all_indexed_projects() -> Dict[str, dict]:
@@ -62,27 +85,38 @@ def set_project_metadata(
     status: str = "indexed",
 ) -> None:
     """Create or update metadata for a project."""
-    data = _load()
-    data.setdefault("projects", {})[project_path] = {
-        "project_id": project_id,
-        "last_activity_at": last_activity_at,
-        "indexed_at": datetime.now(timezone.utc).isoformat(),
-        "repo_path": repo_path,
-        "status": status,
-    }
-    _save(data)
+    with _write_lock():
+        data = _load(strict=True)
+        projects = data.setdefault("projects", {})
+        previous = projects.get(project_path, {})
+        stamp = datetime.now(timezone.utc).isoformat()
+        projects[project_path] = {
+            **previous,
+            "project_id": project_id,
+            "last_activity_at": last_activity_at,
+            "indexed_at": stamp if status == "indexed" else previous.get("indexed_at", ""),
+            "repo_path": repo_path,
+            "status": status,
+            "last_attempt_at": stamp,
+        }
+        _save(data)
 
 
 def remove_project_metadata(project_path: str) -> None:
     """Remove metadata for a project."""
-    data = _load()
-    data.get("projects", {}).pop(project_path, None)
-    _save(data)
+    with _write_lock():
+        data = _load(strict=True)
+        data.get("projects", {}).pop(project_path, None)
+        _save(data)
 
 
 def get_indexed_project_paths() -> List[str]:
     """Return a list of all indexed project path_with_namespace values."""
-    return list(_load().get("projects", {}).keys())
+    return [
+        path
+        for path, meta in _load().get("projects", {}).items()
+        if meta.get("status") == "indexed"
+    ]
 
 
 def is_project_indexed(project_path: str) -> bool:
@@ -99,7 +133,7 @@ def needs_reindex(project_path: str, last_activity_at: str) -> bool:
     meta = get_project_metadata(project_path)
     if meta is None:
         return True
-    if meta.get("status") == "error":
+    if meta.get("status") != "indexed":
         return True
     stored = meta.get("last_activity_at", "")
     return stored != last_activity_at

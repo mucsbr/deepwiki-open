@@ -111,6 +111,136 @@ def test_create_scope_names_all_repositories_without_commits(tmp_path, monkeypat
     assert error.value.detail.count("no readable HEAD commit") == 2
 
 
+def test_refresh_checks_remote_and_reindexes_only_when_changed(repository, monkeypatch):
+    from dataclasses import replace
+
+    from api.agent.access import Access
+    from api.batch_indexer import BatchIndexer
+
+    root, repo = repository
+    index_path = root / "databases" / "group_demo.pkl"
+    index_path.parent.mkdir()
+    index_path.write_bytes(b"existing index")
+    state = {"local": repo.commit, "remote": repo.commit, "reindexes": 0}
+    access = Access(root)
+
+    async def allowed(_projects, _user):
+        return None
+
+    async def versions(_projects, _user):
+        return {repo.project: {
+            "commit": state["remote"],
+            "id": 1,
+            "last_activity_at": "now",
+            "http_url_to_repo": repo.url + ".git",
+        }}
+
+    def resolve(_project, _host, _root):
+        return replace(repo, commit=state["local"])
+
+    async def reindex(_self, project, **_kwargs):
+        assert project["path_with_namespace"] == repo.project
+        assert _self.service_token == "fixture-service-token"
+        state["reindexes"] += 1
+        state["local"] = state["remote"]
+        return True
+
+    monkeypatch.setattr("api.config.GITLAB_URL", "https://gitlab.example")
+    monkeypatch.setattr("api.config.GITLAB_SERVICE_TOKEN", "fixture-service-token")
+    monkeypatch.setattr(access, "check", allowed)
+    monkeypatch.setattr(access, "remote_versions", versions)
+    monkeypatch.setattr("api.agent.access.resolve_repository", resolve)
+    monkeypatch.setattr(BatchIndexer, "reindex_project", reindex)
+    scope = [repo.public()]
+    user = {"gitlab_access_token": "fixture-token"}
+    assert asyncio.run(access.refresh_readers(scope, user))[0].commit == repo.commit
+    assert state["reindexes"] == 0
+
+    state["remote"] = "b" * 40
+    refreshed = asyncio.run(access.refresh_readers(scope, user))
+    assert refreshed[0].commit == state["remote"]
+    assert state["reindexes"] == 1
+
+
+def test_remote_revision_check_uses_gitlab_branch_and_user_token(tmp_path, monkeypatch):
+    import httpx
+
+    from api.agent.access import Access
+
+    requests = []
+    commit = "c" * 40
+
+    def respond(request):
+        requests.append(request)
+        assert request.headers["authorization"] == "Bearer fixture-token"
+        if "/repository/branches/" in str(request.url):
+            return httpx.Response(200, json={"commit": {"id": commit}})
+        return httpx.Response(200, json={
+            "id": 17,
+            "default_branch": "main",
+            "last_activity_at": "2026-09-24T00:00:00Z",
+            "http_url_to_repo": "https://gitlab.example/group/demo.git",
+        })
+
+    original_client = httpx.AsyncClient
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(
+        "api.agent.access.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+    monkeypatch.setattr("api.config.GITLAB_URL", "https://gitlab.example")
+    versions = asyncio.run(Access(tmp_path).remote_versions(
+        ["group/demo"], {"gitlab_access_token": "fixture-token"}
+    ))
+    assert versions["group/demo"]["commit"] == commit
+    assert len(requests) == 2
+    assert "/repository/branches/main" in str(requests[1].url)
+
+
+def test_gitlab_pull_does_not_put_token_in_origin(monkeypatch):
+    from types import SimpleNamespace
+
+    from api.data_pipeline import _git_pull
+
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(stdout=b"Already up to date.\n")
+
+    monkeypatch.setattr("api.data_pipeline.subprocess.run", fake_run)
+    changed = _git_pull(
+        "/unused/repo", "https://gitlab.example/group/demo.git", "gitlab", "fixture-token"
+    )
+    assert changed is False
+    assert len(calls) == 1
+    assert calls[0][0] == ["git", "pull"]
+    assert calls[0][1]["env"]["GIT_CONFIG_KEY_0"].endswith(".extraheader")
+    assert "fixture-token" not in str(calls[0][0])
+
+
+def test_download_repo_propagates_pull_failure(tmp_path, monkeypatch):
+    from api.data_pipeline import download_repo
+
+    clone = tmp_path / "existing"
+    clone.mkdir()
+    (clone / ".git").mkdir()
+
+    def failed_pull(*_args):
+        raise subprocess.CalledProcessError(
+            1, ["git", "pull"], stderr=b"remote repository unavailable"
+        )
+
+    monkeypatch.setattr("api.data_pipeline._git_pull", failed_pull)
+    with pytest.raises(ValueError, match="Git pull failed"):
+        download_repo(
+            "https://gitlab.example/group/demo.git",
+            str(clone),
+            "gitlab",
+            "fixture-token",
+        )
+
+
 def test_reindex_does_not_mark_empty_clone_indexed(tmp_path, monkeypatch):
     from api.batch_indexer import BatchIndexer
 
@@ -144,7 +274,142 @@ def test_reindex_does_not_mark_empty_clone_indexed(tmp_path, monkeypatch):
         )
     )
     assert result is False
-    assert statuses == ["error"]
+    assert statuses == ["indexing", "error"]
+
+
+def test_failed_pull_cannot_be_marked_indexed(tmp_path, monkeypatch):
+    from api.batch_indexer import BatchIndexer
+
+    def failed_pull(*_args, **_kwargs):
+        raise ValueError("Git pull failed: repository unavailable")
+
+    monkeypatch.setattr(
+        "api.data_pipeline.DatabaseManager.prepare_database", failed_pull
+    )
+    statuses = []
+    monkeypatch.setattr(
+        "api.metadata_store.set_project_metadata",
+        lambda **kwargs: statuses.append(kwargs["status"]),
+    )
+    project = {
+        "path_with_namespace": "group/demo",
+        "id": 1,
+        "last_activity_at": "now",
+        "http_url_to_repo": "https://gitlab.example/group/demo.git",
+    }
+    result = asyncio.run(
+        BatchIndexer("https://gitlab.example", "fixture-token", []).reindex_project(
+            project
+        )
+    )
+    assert result is False
+    assert statuses == ["indexing", "error"]
+
+
+def test_indexed_status_requires_commit_vectors_and_index_file(repository, monkeypatch):
+    from types import SimpleNamespace
+
+    from api.batch_indexer import BatchIndexer
+
+    root, repo = repository
+    index_path = root / "databases" / "group_demo.pkl"
+    index_path.parent.mkdir()
+
+    def prepared(*_args, **_kwargs):
+        index_path.write_bytes(b"fixture index")
+        return [SimpleNamespace(vector=[0.1, 0.2])]
+
+    monkeypatch.setattr(
+        "adalflow.utils.get_adalflow_default_root_path", lambda: str(root)
+    )
+    monkeypatch.setattr(
+        "api.data_pipeline.DatabaseManager.prepare_database", prepared
+    )
+    statuses = []
+    monkeypatch.setattr(
+        "api.metadata_store.set_project_metadata",
+        lambda **kwargs: statuses.append(kwargs["status"]),
+    )
+    monkeypatch.setattr("api.metadata_store.needs_reindex", lambda *_args: False)
+    project = {
+        "path_with_namespace": repo.project,
+        "id": 1,
+        "last_activity_at": "now",
+        "http_url_to_repo": repo.url + ".git",
+    }
+    indexer = BatchIndexer("https://gitlab.example", "fixture-token", [])
+    assert asyncio.run(indexer.reindex_project(project)) is True
+    assert statuses == ["indexing", "indexed"]
+    assert indexer.should_reindex(project) is False
+    index_path.unlink()
+    assert indexer.should_reindex(project) is True
+
+
+def test_metadata_writes_are_atomic_and_interrupted_indexes_retry(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from api import metadata_store
+
+    monkeypatch.setattr(metadata_store, "METADATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        metadata_store,
+        "METADATA_FILE",
+        str(tmp_path / "index_metadata.json"),
+    )
+
+    def write(index):
+        metadata_store.set_project_metadata(
+            f"group/repo-{index}", index, "activity", f"group/repo-{index}",
+            status="indexing",
+        )
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        list(pool.map(write, range(20)))
+    projects = metadata_store.get_all_indexed_projects()
+    assert len(projects) == 20
+    assert metadata_store.needs_reindex("group/repo-0", "activity")
+    assert projects["group/repo-0"]["indexed_at"] == ""
+    metadata_store.set_project_metadata(
+        "group/repo-0", 0, "activity", "group/repo-0", status="indexed"
+    )
+    assert not metadata_store.needs_reindex("group/repo-0", "activity")
+
+
+def test_complete_batch_audit_marks_inaccessible_repositories_unavailable(monkeypatch):
+    import httpx
+
+    from api.batch_indexer import BatchIndexer
+
+    metadata = {
+        "group/gone": {"status": "indexed", "project_id": 1, "repo_path": "group/gone"},
+        "group/present": {"status": "indexed", "project_id": 2, "repo_path": "group/present"},
+    }
+    changes = []
+
+    def respond(request):
+        if str(request.url).endswith("/1"):
+            return httpx.Response(404)
+        return httpx.Response(200, json={"path_with_namespace": "group/present"})
+
+    original_client = httpx.AsyncClient
+    transport = httpx.MockTransport(respond)
+    monkeypatch.setattr(
+        "api.batch_indexer.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=transport, **kwargs),
+    )
+    monkeypatch.setattr(
+        "api.metadata_store.get_all_indexed_projects", lambda: metadata
+    )
+    monkeypatch.setattr(
+        "api.metadata_store.set_project_metadata",
+        lambda **kwargs: changes.append((kwargs["project_path"], kwargs["status"])),
+    )
+    indexer = BatchIndexer("https://gitlab.example", "fixture-token", [1])
+    assert asyncio.run(indexer.audit_unlisted_projects(set())) == 1
+    assert changes == [("group/gone", "unavailable")]
+    indexer._group_scan_complete = False
+    assert asyncio.run(indexer.audit_unlisted_projects(set())) == 0
+    assert changes == [("group/gone", "unavailable")]
 
 
 def test_storage_idempotency_and_recovery(tmp_path):
@@ -163,6 +428,45 @@ def test_storage_idempotency_and_recovery(tmp_path):
     assert store.get_run(run["id"])["status"] == "interrupted"
 
 
+def test_existing_run_snapshots_survive_session_refresh(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "legacy.db"
+    old_scope = [{"project": "group/demo", "url": "https://gitlab.example/group/demo", "commit": "a" * 40}]
+    new_scope = [{**old_scope[0], "commit": "b" * 40}]
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, owner TEXT NOT NULL, title TEXT NOT NULL,
+                repos TEXT NOT NULL, language TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE runs (
+                id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
+                request_id TEXT NOT NULL, message TEXT NOT NULL,
+                provider TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL,
+                answer TEXT NOT NULL DEFAULT '', error TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE(session_id, request_id)
+            );
+        """)
+        db.execute(
+            "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
+            ("session", "1", "", json.dumps(old_scope), "en", "before", "before"),
+        )
+        db.execute(
+            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            ("old-run", "session", "old-request", "first", "test", "test", "completed", "done", None, "before", "before"),
+        )
+    store = Store(path)
+    assert store.get_run("old-run")["repos"] == old_scope
+    next_run = store.create_run("session", "new-request", "second", "test", "test")
+    store.set_run_repos(next_run["id"], new_scope)
+    assert store.get_run("old-run")["repos"] == old_scope
+    assert store.get_run(next_run["id"])["repos"] == new_scope
+    assert store.get_session("session", "1")["repos"] == new_scope
+
+
 class TestModel(FakeMessagesListChatModel):
     __test__ = False
 
@@ -176,6 +480,41 @@ class FakeAccess:
     async def check(self, projects, user):
         if self.denied:
             raise HTTPException(403, "permission revoked")
+
+
+def test_refresh_failure_does_not_analyze_stale_source(repository):
+    async def check():
+        root, repo = repository
+        access = FakeAccess()
+
+        async def unavailable(_scope, _user, on_progress=None):
+            raise HTTPException(502, "Cannot check current code for group/demo.")
+
+        access.refresh_readers = unavailable
+        rt = Runtime(root / "refresh-failure", root, access=access)
+        await rt.start()
+        try:
+            session = rt.store.create_session("1", [repo.public()], "en")
+            run = rt.store.create_run(
+                session["id"], str(uuid4()), "Read latest code", "test", "test"
+            )
+            rt.launch(
+                run,
+                session,
+                None,
+                {"gitlab_user_id": 1},
+                TestModel(responses=[AIMessage(content="stale answer")]),
+            )
+            await rt.tasks[run["id"]]
+            result = rt.store.get_run(run["id"])
+            assert result["status"] == "failed"
+            assert result["answer"] == ""
+            assert result["repos"] is None
+            assert "Cannot check current code" in result["error"]
+        finally:
+            await rt.close()
+
+    asyncio.run(check())
 
 
 def test_real_deepagents_tool_loop_checkpoint_and_followup(repository):
@@ -429,6 +768,11 @@ def test_api_selected_scope_and_duplicate_submission(repository, monkeypatch):
         model_factory=lambda *_: TestModel(responses=[AIMessage(content="done")]),
     )
 
+    async def refreshed(_scope, _user, on_progress=None):
+        return [resolve_repository("group/demo", "https://gitlab.example", root)]
+
+    monkeypatch.setattr(rt.access, "refresh_readers", refreshed)
+
     @asynccontextmanager
     async def lifespan(app):
         await rt.start()
@@ -483,6 +827,24 @@ def test_api_selected_scope_and_duplicate_submission(repository, monkeypatch):
             time.sleep(0.02)
         assert run["status"] == "completed"
         assert len(rt.store.runs(session["id"])) == 1
+        first_commit = run["repos"][0]["commit"]
+        (repo.root / "order.py").write_text("def submit():\n    return 'changed'\n")
+        run_git(repo.root, "add", "order.py")
+        run_git(repo.root, "commit", "-qm", "second fixture revision")
+        body["request_id"] = str(uuid4())
+        next_response = client.post(
+            f"/api/agent/sessions/{session['id']}/runs", json=body
+        )
+        assert next_response.status_code == 202
+        for _ in range(100):
+            next_run = rt.store.get_run(next_response.json()["id"])
+            if next_run["status"] == "completed":
+                break
+            time.sleep(0.02)
+        assert next_run["status"] == "completed"
+        assert rt.store.get_run(first.json()["id"])["repos"][0]["commit"] == first_commit
+        assert next_run["repos"][0]["commit"] != first_commit
+        assert rt.store.get_session(session["id"], "1")["repos"] == next_run["repos"]
     for path in (root / "api-live").glob("*.sqlite3"):
         assert b"fixture-private-token" not in path.read_bytes()
 
@@ -505,6 +867,9 @@ def test_openai_compatible_streaming_tool_protocol(repository):
                 "read_source" in names
                 and "task" not in names
                 and "execute" not in names
+                and "grep" not in names
+                and "glob" not in names
+                and "read_file" not in names
             )
             if any(message["role"] == "tool" for message in body["messages"]):
                 delta = {"content": "Source confirmed."}
@@ -579,6 +944,107 @@ def test_openai_compatible_streaming_tool_protocol(repository):
                 assert any(
                     m["role"] == "tool" and "submitted" in m["content"]
                     for m in calls[1]["messages"]
+                )
+            finally:
+                await rt.close()
+
+    asyncio.run(check())
+
+
+def test_tool_only_model_is_forced_to_answer_before_graph_limit(repository):
+    import httpx
+    from langchain_openai import ChatOpenAI
+
+    from api.agent.runtime import RESEARCH_MODEL_CALLS
+
+    async def check():
+        root, repo = repository
+        calls = []
+
+        async def respond(request):
+            body = json.loads(request.content)
+            calls.append(body)
+            if body.get("tools"):
+                delta = {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": f"loop-{len(calls)}",
+                            "type": "function",
+                            "function": {
+                                "name": "list_repositories",
+                                "arguments": "{}",
+                            },
+                        }
+                    ]
+                }
+                finish = "tool_calls"
+            else:
+                delta = {
+                    "content": (
+                        "The selected repository does not contain the "
+                        "backend implementation."
+                    )
+                }
+                finish = "stop"
+            chunks = [
+                {
+                    "id": f"completion-{len(calls)}",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "offline-test",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"role": "assistant", **delta},
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": f"completion-{len(calls)}",
+                    "object": "chat.completion.chunk",
+                    "created": 1,
+                    "model": "offline-test",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
+                },
+            ]
+            stream = (
+                "".join("data: " + json.dumps(chunk) + "\n\n" for chunk in chunks)
+                + "data: [DONE]\n\n"
+            )
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, text=stream
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            model = ChatOpenAI(
+                model="offline-test",
+                api_key="fixture-key",
+                base_url="https://fixture.invalid/v1",
+                http_async_client=client,
+                streaming=True,
+                use_responses_api=False,
+            )
+            rt = Runtime(root / "bounded", root, access=FakeAccess())
+            await rt.start()
+            try:
+                session = rt.store.create_session("1", [repo.public()], "en")
+                run = rt.store.create_run(
+                    session["id"],
+                    str(uuid4()),
+                    "Trace the backend flow",
+                    "openai",
+                    "offline-test",
+                )
+                rt.launch(run, session, [repo], {"gitlab_user_id": 1}, model)
+                await rt.tasks[run["id"]]
+                assert rt.store.get_run(run["id"])["status"] == "completed"
+                assert len(calls) == RESEARCH_MODEL_CALLS + 1
+                assert not calls[-1].get("tools")
+                assert (
+                    "backend implementation"
+                    in rt.store.get_run(run["id"])["answer"]
                 )
             finally:
                 await rt.close()

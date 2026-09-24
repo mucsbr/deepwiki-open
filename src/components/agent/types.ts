@@ -15,6 +15,7 @@ export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancell
 export interface AgentRun {
   id: string; session_id: string; message: string; provider: string; model: string;
   status: RunStatus; answer: string; error?: string | null;
+  repos?: { project: string; url: string; commit: string }[] | null;
 }
 export interface AgentDocument { name: string; content: string; updated_at: string }
 export interface AgentSession {
@@ -25,7 +26,9 @@ export interface SessionDetail extends AgentSession { runs: AgentRun[]; document
 export interface AgentEvent {
   id: number; type: string;
   data: { content?: string; status?: RunStatus; error?: string | boolean | null;
-    id?: string; name?: string; todos?: { content: string; status: string }[] };
+    id?: string; name?: string; repo?: string; phase?: string;
+    repos?: { project: string; url: string; commit: string }[];
+    todos?: { content: string; status: string }[] };
 }
 export interface ToolProgress { id: string; name: string; done: boolean; error: boolean }
 export function isActive(status?: RunStatus): boolean { return status === 'queued' || status === 'running'; }

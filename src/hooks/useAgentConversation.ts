@@ -12,6 +12,7 @@ export function useAgentConversation(token: string | null) {
   const [tools, setTools] = useState<ToolProgress[]>([]);
   const [todos, setTodos] = useState<{ content: string; status: string }[]>([]);
   const [reconnecting, setReconnecting] = useState(false);
+  const [refresh, setRefresh] = useState<{ repo: string; phase: string } | null>(null);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const controller = useRef<AbortController | null>(null);
   const selected = useRef<string | null>(null);
@@ -25,7 +26,7 @@ export function useAgentConversation(token: string | null) {
 
   const reset = useCallback(() => {
     controller.current?.abort(); selected.current = null;
-    setSession(null); setTools([]); setTodos([]); setError(''); setReconnecting(false);
+    setSession(null); setTools([]); setTodos([]); setError(''); setReconnecting(false); setRefresh(null);
   }, []);
 
   useEffect(() => {
@@ -38,7 +39,7 @@ export function useAgentConversation(token: string | null) {
     if (!token) return;
     controller.current?.abort();
     const abort = new AbortController(); controller.current = abort;
-    setTools([]); setTodos([]);
+    setTools([]); setTodos([]); setRefresh(null);
     let cursor = 0; let failures = 0;
     while (!abort.signal.aborted && selected.current === sid) {
       try {
@@ -60,6 +61,15 @@ export function useAgentConversation(token: string | null) {
           }
           if (event.type === 'tool_end') setTools(previous => previous.map(tool => tool.id !== event.data.id ? tool : { ...tool, done: true, error: !!event.data.error }));
           if (event.type === 'plan') setTodos(event.data.todos ?? []);
+          if (event.type === 'refresh' && event.data.repo !== undefined && event.data.phase)
+            setRefresh({ repo: event.data.repo, phase: event.data.phase });
+          if (event.type === 'source_scope' && event.data.repos)
+            setSession(previous => previous?.id !== sid ? previous : {
+              ...previous,
+              repos: event.data.repos!,
+              runs: previous.runs.map(run => run.id !== rid ? run : { ...run, repos: event.data.repos! }),
+            });
+          if (event.type === 'status' && event.data.status && !isActive(event.data.status)) setRefresh(null);
         });
         const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`, undefined, abort.signal);
         if (selected.current !== sid || abort.signal.aborted) return;
@@ -81,7 +91,7 @@ export function useAgentConversation(token: string | null) {
   const open = useCallback(async (sid: string) => {
     if (!token) return;
     controller.current?.abort(); selected.current = sid;
-    setPending(true); setSession(null); setError(''); setTools([]); setTodos([]);
+    setPending(true); setSession(null); setError(''); setTools([]); setTodos([]); setRefresh(null);
     try {
       const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`);
       if (selected.current !== sid) return;
@@ -139,6 +149,6 @@ export function useAgentConversation(token: string | null) {
     const link = window.document.createElement('a'); link.href = url; link.download = document.name; link.click(); URL.revokeObjectURL(url);
   }, []);
 
-  return { sessions, session, error, pending, tools, todos, reconnecting, nextOffset,
+  return { sessions, session, error, pending, tools, todos, reconnecting, refresh, nextOffset,
     reset, open, send, control, download, refreshHistory };
 }

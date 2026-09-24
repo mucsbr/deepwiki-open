@@ -84,6 +84,21 @@ def _build_clone_url(repo_url: str, repo_type: str = None, access_token: str = N
     return clone_url
 
 
+def _git_auth_env(repo_url: str, repo_type: str, access_token: str = None) -> dict:
+    """Pass GitLab credentials to one Git process without changing .git/config."""
+    env = os.environ.copy()
+    env["GIT_SSL_NO_VERIFY"] = "true"
+    if access_token and repo_type == "gitlab":
+        parsed = urlparse(repo_url)
+        basic = base64.b64encode(f"oauth2:{access_token}".encode()).decode()
+        env["GIT_CONFIG_COUNT"] = "1"
+        env["GIT_CONFIG_KEY_0"] = (
+            f"http.{parsed.scheme}://{parsed.netloc}/.extraheader"
+        )
+        env["GIT_CONFIG_VALUE_0"] = f"Authorization: Basic {basic}"
+    return env
+
+
 def _git_pull(local_path: str, repo_url: str = None, repo_type: str = None, access_token: str = None) -> bool:
     """
     Execute git pull on an existing repository.
@@ -97,12 +112,15 @@ def _git_pull(local_path: str, repo_url: str = None, repo_type: str = None, acce
     Returns:
         True if the pull brought new changes, False if already up-to-date.
     """
-    env = os.environ.copy()
-    env["GIT_SSL_NO_VERIFY"] = "true"
+    env = _git_auth_env(repo_url, repo_type, access_token)
 
-    # If an access token is provided, temporarily update the remote URL so that
-    # git pull can authenticate.  We restore the clean URL afterwards.
-    clone_url = _build_clone_url(repo_url, repo_type, access_token) if repo_url and access_token else None
+    # Older non-GitLab integrations still update origin temporarily. GitLab
+    # uses a per-process HTTP header and leaves the stored remote untouched.
+    clone_url = (
+        _build_clone_url(repo_url, repo_type, access_token)
+        if repo_url and access_token and repo_type != "gitlab"
+        else None
+    )
     if clone_url:
         subprocess.run(
             ["git", "remote", "set-url", "origin", clone_url],
@@ -171,23 +189,27 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
                 if access_token:
                     error_msg = error_msg.replace(access_token, "***TOKEN***")
                     error_msg = error_msg.replace(quote(access_token, safe=''), "***TOKEN***")
-                logger.warning(f"git pull failed ({error_msg}), continuing with existing repo")
-                # Keep the existing repository as-is — deleting it would be
-                # destructive when the failure is just a network issue.
-                return f"Using existing repository at {local_path} (pull failed)", False
+                    basic = base64.b64encode(f"oauth2:{access_token}".encode()).decode()
+                    error_msg = error_msg.replace(basic, "***TOKEN***")
+                # Keep the local clone intact, but never report a failed refresh
+                # as a successfully indexed current repository.
+                raise ValueError(f"Git pull failed: {error_msg}") from pull_err
 
         # Ensure the local path exists
         os.makedirs(local_path, exist_ok=True)
 
-        # Prepare the clone URL with access token if provided
-        clone_url = _build_clone_url(repo_url, repo_type, access_token)
+        # GitLab credentials stay in this Git process, not in the clone origin.
+        clone_url = (
+            repo_url
+            if repo_type == "gitlab"
+            else _build_clone_url(repo_url, repo_type, access_token)
+        )
         if access_token:
             logger.info("Using access token for authentication")
 
         # Clone the repository (full clone for future incremental pulls)
         logger.info(f"Cloning repository from {repo_url} to {local_path}")
-        env = os.environ.copy()
-        env["GIT_SSL_NO_VERIFY"] = "true"
+        env = _git_auth_env(repo_url, repo_type, access_token)
         result = subprocess.run(
             ["git", "clone", clone_url, local_path],
             check=True,
@@ -197,7 +219,7 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
         )
 
         # After clone, reset remote URL to clean version (no token)
-        if access_token:
+        if access_token and repo_type != "gitlab":
             subprocess.run(
                 ["git", "remote", "set-url", "origin", repo_url],
                 cwd=local_path, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
@@ -215,7 +237,11 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
             # Also remove URL-encoded token to prevent leaking encoded version
             encoded_token = quote(access_token, safe='')
             error_msg = error_msg.replace(encoded_token, "***TOKEN***")
+            basic = base64.b64encode(f"oauth2:{access_token}".encode()).decode()
+            error_msg = error_msg.replace(basic, "***TOKEN***")
         raise ValueError(f"Error during cloning: {error_msg}")
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f"An unexpected error occurred: {str(e)}")
 

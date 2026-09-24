@@ -9,7 +9,7 @@
 - 现有 `/ws/chat` 和 `/chat/completions/stream` 仍服务 Wiki 生成。Ask 使用独立 `/api/agent/*` 路由。
 - 使用 SQLite 保存会话、执行记录、事件与文档，使用 LangGraph SQLite checkpointer 保存工具调用上下文。文件位于 `~/.adalflow/agent/`，随既有挂载持久化。
 - 首版运行方式对应当前单 Uvicorn worker 部署。后台任务独立于浏览器连接，事件可重放；重启后标记未完成任务为 interrupted，由用户重新鉴权后恢复。进程锁拒绝多个 worker 同时管理同一数据库。
-- 原始仓库只读，按会话固定仓库范围和 commit。使用 Git 对象读取，避免索引重建时工作区变动造成行号漂移。现有向量索引只提供候选，引用必须通过源码工具确认。
+- 远端仓库只读，会话固定仓库范围；后续改为每轮检查并更新本地 clone 与索引，按该轮 commit 使用 Git 对象读取，避免工作区变动造成行号漂移。向量索引只提供候选，引用必须通过源码工具确认。
 - GitLab 身份和逐仓库权限在服务端验证，读取会话也校验权限；不把用户 token 存入消息、checkpoint 或事件。不自动把全部索引仓库加入用户所选范围。
 - 模型使用 LangChain tool-calling 适配器，复用现有服务端 provider/model 配置。先覆盖当前 OpenAI-compatible 接口及常见 provider；实际模型与代理的工具调用能力需在部署环境验收。
 - 前端沿用 Next.js 15 / Tailwind 4、Markdown/Mermaid 与登录上下文。参考官方 UI 的会话/工具进度/文档面板布局，自建适配现有平台的组件与事件协议。

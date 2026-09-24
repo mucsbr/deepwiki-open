@@ -32,7 +32,7 @@ class Store:
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id),
                     request_id TEXT NOT NULL, message TEXT NOT NULL,
                     provider TEXT NOT NULL, model TEXT NOT NULL, status TEXT NOT NULL,
-                    answer TEXT NOT NULL DEFAULT '', error TEXT,
+                    answer TEXT NOT NULL DEFAULT '', error TEXT, repos TEXT,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                     UNIQUE(session_id, request_id)
                 );
@@ -50,6 +50,14 @@ class Store:
                     PRIMARY KEY(session_id, name)
                 );
             """)
+            columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
+            if "repos" not in columns:
+                db.execute("ALTER TABLE runs ADD COLUMN repos TEXT")
+                # Existing runs retain the source version that their session used.
+                db.execute(
+                    "UPDATE runs SET repos=(SELECT repos FROM sessions "
+                    "WHERE sessions.id=runs.session_id)"
+                )
 
     @contextmanager
     def connect(self):
@@ -68,6 +76,14 @@ class Store:
             return None
         result = dict(row)
         result["repos"] = json.loads(result["repos"])
+        return result
+
+    @staticmethod
+    def run_row(row):
+        if row is None:
+            return None
+        result = dict(row)
+        result["repos"] = json.loads(result["repos"]) if result["repos"] else None
         return result
 
     def create_session(self, owner: str, repos: list[dict], language: str) -> dict:
@@ -100,7 +116,7 @@ class Store:
     def runs(self, sid: str) -> list[dict]:
         with self.connect() as db:
             return [
-                dict(row)
+                self.run_row(row)
                 for row in db.execute(
                     "SELECT * FROM runs WHERE session_id=? ORDER BY created_at", (sid,)
                 )
@@ -109,7 +125,7 @@ class Store:
     def get_run(self, rid: str) -> dict | None:
         with self.connect() as db:
             row = db.execute("SELECT * FROM runs WHERE id=?", (rid,)).fetchone()
-            return dict(row) if row else None
+            return self.run_row(row)
 
     def find_request(self, sid: str, request_id: str) -> dict | None:
         with self.connect() as db:
@@ -117,7 +133,18 @@ class Store:
                 "SELECT * FROM runs WHERE session_id=? AND request_id=?",
                 (sid, request_id),
             ).fetchone()
-            return dict(row) if row else None
+            return self.run_row(row)
+
+    def set_run_repos(self, rid: str, repos: list[dict]) -> None:
+        snapshot, stamp = json.dumps(repos), now()
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE runs SET repos=?,updated_at=? WHERE id=?", (snapshot, stamp, rid))
+            db.execute(
+                "UPDATE sessions SET repos=?,updated_at=? "
+                "WHERE id=(SELECT session_id FROM runs WHERE id=?)",
+                (snapshot, stamp, rid),
+            )
 
     def create_run(
         self, sid: str, request_id: str, message: str, provider: str, model: str
