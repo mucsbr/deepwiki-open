@@ -11,7 +11,6 @@ Usage:
 
 import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -142,6 +141,7 @@ class BatchIndexer:
         """Reindex changed or locally incomplete projects."""
         from adalflow.utils import get_adalflow_default_root_path
         from api.agent.repositories import resolve_repository
+        from api.index_state import index_problem
         from api.metadata_store import needs_reindex
 
         path = project.get("path_with_namespace", "")
@@ -154,7 +154,10 @@ class BatchIndexer:
         except ValueError:
             return True
         index_path = root / "databases" / f"{repo.root.name}.pkl"
-        return not index_path.is_file() or index_path.stat().st_size == 0
+        problem = index_problem(index_path, repo.commit)
+        if problem:
+            logger.info("Reindex required for %s: %s", path, problem)
+        return problem is not None
 
     async def reindex_project(
         self,
@@ -190,17 +193,6 @@ class BatchIndexer:
             if not http_url:
                 raise ValueError("GitLab project has no clone URL.")
 
-            # When force re-indexing, remove old pkl to avoid deserialization errors.
-            if force:
-                from api.wiki_generator import _compute_repo_dir_name
-
-                repo_dir_name = _compute_repo_dir_name(http_url, "gitlab")
-                root_path = os.path.expanduser(os.path.join("~", ".adalflow"))
-                pkl_path = os.path.join(root_path, "databases", f"{repo_dir_name}.pkl")
-                if os.path.exists(pkl_path):
-                    logger.info("Force mode: removing old database %s", pkl_path)
-                    os.remove(pkl_path)
-
             db_manager = DatabaseManager()
             loop = asyncio.get_event_loop()
             documents = await loop.run_in_executor(
@@ -210,6 +202,7 @@ class BatchIndexer:
                     repo_type="gitlab",
                     access_token=self.service_token,
                     pull=True,
+                    force_reindex=force,
                 ),
             )
 
@@ -217,6 +210,7 @@ class BatchIndexer:
             # documents. Do not advertise it as usable by Ask Agent.
             from adalflow.utils import get_adalflow_default_root_path
             from api.agent.repositories import resolve_repository
+            from api.index_state import index_problem
 
             repo = await asyncio.to_thread(
                 resolve_repository,
@@ -224,15 +218,12 @@ class BatchIndexer:
                 self.gitlab_url,
                 Path(get_adalflow_default_root_path()),
             )
-            if not documents or not any(
-                getattr(doc, "vector", None) is not None
-                and len(getattr(doc, "vector")) > 0
-                for doc in documents
-            ):
+            if not documents:
                 raise ValueError("No usable embeddings were produced for this repository.")
             index_file = Path(get_adalflow_default_root_path()) / "databases" / f"{repo.root.name}.pkl"
-            if not index_file.is_file() or index_file.stat().st_size == 0:
-                raise ValueError("Repository index file is missing or empty.")
+            problem = await asyncio.to_thread(index_problem, index_file, repo.commit)
+            if problem:
+                raise ValueError(f"Repository index validation failed: {problem}")
 
             repo_path = quote(path_with_ns, safe="")
             set_project_metadata(
@@ -437,7 +428,11 @@ class BatchIndexer:
             # For regenerate_wiki / extract_insights we skip the should_reindex
             # check (they don't depend on code freshness).
             skip_freshness_ops = ("regenerate_wiki", "extract_insights")
-            if operation not in skip_freshness_ops and not force and not self.should_reindex(project):
+            if (
+                operation not in skip_freshness_ops
+                and not force
+                and not await asyncio.to_thread(self.should_reindex, project)
+            ):
                 logger.info("Skipping (up-to-date): %s", path)
                 skipped += 1
                 if on_progress:
@@ -540,7 +535,7 @@ class BatchIndexer:
             current += 1
             path = project.get("path_with_namespace", "unknown")
 
-            if not self.should_reindex(project):
+            if not await asyncio.to_thread(self.should_reindex, project):
                 logger.info("Skipping (up-to-date): %s", path)
                 skipped += 1
                 if on_progress:

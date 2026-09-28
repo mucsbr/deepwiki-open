@@ -80,6 +80,10 @@ Wiki 直接读取 `wikicache/deepwiki_cache_gitlab_*.json`，没有 `_wiki.pkl`�
 
 更换 embedding 模型后需要重建代码索引；Ask 会读取 PKL 中保存的 transformer 模型名称，跳过明确属于其他模型的索引，即使维度相同也不混用。Qwen3-Embedding 的代码查询自动添加检索指令，建库源码不添加查询指令；可在 embedder 配置中用 `query_instruction` 覆盖。已有 Wiki JSON 不需要随 embedding 模型切换而重建。
 
+普通 reindex 和“检查更新”同时检查 embedding 模型、维度、provider 类型、任务类型、源码 commit 及向量完整性，不再仅凭 GitLab 活动时间和 PKL 是否存在来 skip。数据库缓存复用采用同一检查：模型/维度变化，即使源码未变化，也会重新生成向量。新索引保存 embedding 配置和源码版本；缺少可核实模型/源码版本的旧缓存会进行一次重建。
+
+重建先完成全部向量并验证，再通过临时文件原子替换 PKL；部分向量缺失、服务失败或生成期间源码版本变化均不会覆盖旧文件，也不会标记 `indexed`。`force` 只强制重算，不提前删除旧索引。批量索引的检查放到工作线程，避免读取 PKL 阻塞 API 事件循环。
+
 `search_source` 支持跨选定仓库的精确文本搜索；`list_source_files` 支持目录/文件模式定位。符号链接、路径越界、环境密钥文件、大文件和二进制文件不作为源码读出。每次源码/索引工具调用检查仓库权限，沿用现有 GitLab 权限缓存 TTL。
 
 `load_flow_guide` 按需提供入口定位、项目约定识别、上下游追踪、业务规则、失败分支与未解问题的分析方法。简单定位不强制生成完整流程。工具读取成功不能证明结论正确，输出必须区分源码支持、推断与未知。

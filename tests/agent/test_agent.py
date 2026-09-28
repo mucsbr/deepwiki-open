@@ -307,17 +307,26 @@ def test_failed_pull_cannot_be_marked_indexed(tmp_path, monkeypatch):
 
 
 def test_indexed_status_requires_commit_vectors_and_index_file(repository, monkeypatch):
-    from types import SimpleNamespace
+    from adalflow.core.db import LocalDB
+    from adalflow.core.types import Document
 
     from api.batch_indexer import BatchIndexer
+    from api.index_state import embedding_spec
 
     root, repo = repository
     index_path = root / "databases" / "group_demo.pkl"
     index_path.parent.mkdir()
+    monkeypatch.setattr("api.config.get_embedder_config", lambda: {
+        "model_kwargs": {"model": "fixture-embedding", "dimensions": 2},
+    })
 
     def prepared(*_args, **_kwargs):
-        index_path.write_bytes(b"fixture index")
-        return [SimpleNamespace(vector=[0.1, 0.2])]
+        documents = [Document(text="submit", vector=[0.1, 0.2])]
+        database = LocalDB(transformed_items={"split_and_embed": documents})
+        database.index_embedding_spec = embedding_spec()
+        database.source_revision = repo.commit
+        database.save_state(str(index_path))
+        return documents
 
     monkeypatch.setattr(
         "adalflow.utils.get_adalflow_default_root_path", lambda: str(root)
@@ -686,6 +695,7 @@ def test_existing_index_is_filtered_and_never_rebuilt(repository, monkeypatch):
     from adalflow.core.types import Document
 
     from api.agent.repositories import IndexSearch
+    from api.index_state import embedding_spec
 
     root, repo = repository
     (root / "databases").mkdir()
@@ -700,6 +710,7 @@ def test_existing_index_is_filtered_and_never_rebuilt(repository, monkeypatch):
         ),
     ]
     db = LocalDB(transformed_items={"split_and_embed": docs})
+    db.index_embedding_spec = embedding_spec()
     db.save_state(str(root / "databases" / "group_demo.pkl"))
 
     class Embedder:
@@ -722,6 +733,7 @@ def test_semantic_search_reports_embedding_channel_failure_and_partial_coverage(
     from adalflow.core.types import Document
 
     from api.agent.repositories import IndexSearch
+    from api.index_state import embedding_spec
 
     root, repo = repository
     (root / "databases").mkdir()
@@ -729,6 +741,7 @@ def test_semantic_search_reports_embedding_channel_failure_and_partial_coverage(
         Document(text="submit", vector=[1.0, 0.0], meta_data={"file_path": "order.py"}),
         Document(text="unfinished chunk", vector=[], meta_data={"file_path": "order.py"}),
     ]})
+    db.index_embedding_spec = embedding_spec()
     db.save_state(str(root / "databases" / "group_demo.pkl"))
 
     monkeypatch.setattr(
@@ -780,7 +793,7 @@ def test_changed_embedding_model_is_not_mixed_even_at_same_dimension(repository,
     result = IndexSearch(SourceReader([repo]), root).search("submit")
     assert result["matches"] == []
     assert result["index_coverage"][0]["indexed_models"] == ["text-embedding-3-small"]
-    assert "rebuild" in result["index_coverage"][0]["reason"]
+    assert "rebuild" in result["index_coverage"][0]["reason"].lower()
 
     component.model_kwargs["model"] = "Qwen/Qwen3-Embedding-4B"
     queries = []

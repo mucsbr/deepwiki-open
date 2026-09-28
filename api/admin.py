@@ -580,7 +580,7 @@ async def trigger_extract_insights(
 
 @admin_router.get("/check-updates")
 async def check_updates(_admin: dict = Depends(require_admin)):
-    """Compare GitLab last_activity_at with stored metadata for all indexed projects.
+    """Check GitLab freshness and embedding-cache compatibility for indexed projects.
 
     Returns a dict mapping project_path to update info:
     ``{ "stored": "...", "current": "...", "needs_update": bool }``
@@ -608,6 +608,9 @@ async def check_updates(_admin: dict = Depends(require_admin)):
         return {}
 
     result: dict[str, dict] = {}
+    from api.batch_indexer import BatchIndexer
+
+    indexer = BatchIndexer(GITLAB_URL, GITLAB_SERVICE_TOKEN, [])
 
     async with httpx.AsyncClient(verify=False) as client:
         for pid, path in id_to_path.items():
@@ -623,7 +626,10 @@ async def check_updates(_admin: dict = Depends(require_admin)):
                     result[path] = {
                         "stored": stored_activity,
                         "current": current_activity,
-                        "needs_update": stored_activity != current_activity,
+                        "needs_update": await asyncio.to_thread(
+                            indexer.should_reindex,
+                            {"path_with_namespace": path, "last_activity_at": current_activity},
+                        ),
                     }
                 else:
                     result[path] = {

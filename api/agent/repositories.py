@@ -292,6 +292,11 @@ class IndexSearch:
         from adalflow.core.db import LocalDB
 
         from api.config import get_embedder_config, get_embedder_type
+        from api.index_state import (
+            embedding_mismatch,
+            embedding_spec,
+            stored_embedding_specs,
+        )
         from api.tools.embedder import get_embedder
 
         if not query.strip() or len(query) > 2000:
@@ -300,6 +305,7 @@ class IndexSearch:
         for name in projects:
             self.reader.repository(name)
         config = get_embedder_config()
+        expected = embedding_spec()
         model = config.get("model_kwargs", {}).get("model", "")
         key = tuple(projects)
         if key not in self.retrievers:
@@ -314,21 +320,19 @@ class IndexSearch:
                     )
                     continue
                 db = LocalDB.load_state(str(path))
-                indexed_models = {
-                    str(component.model_kwargs["model"])
-                    for transformer in db.transformer_setups.values()
-                    for _, component in transformer.named_components()
-                    if isinstance(getattr(component, "model_kwargs", None), dict)
-                    and component.model_kwargs.get("model")
-                }
-                if indexed_models and indexed_models != {model}:
+                indexed_models = {spec["model"] for spec in stored_embedding_specs(db)}
+                mismatch = embedding_mismatch(db, expected)
+                revision = getattr(db, "source_revision", None)
+                if revision and revision != repo.commit:
+                    mismatch = "Indexed source revision differs from this question's source."
+                if mismatch:
                     coverage.append({
                         "repo": name,
                         "index_available": True,
                         "indexed_chunks": 0,
                         "indexed_models": sorted(indexed_models),
                         "query_model": model,
-                        "reason": "Embedding model changed; rebuild this code index before semantic search.",
+                        "reason": f"{mismatch} Rebuild this code index before semantic search.",
                     })
                     continue
                 loaded = db.get_transformed_data(key="split_and_embed") or []

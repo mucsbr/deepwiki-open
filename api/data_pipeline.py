@@ -8,6 +8,8 @@ import tiktoken
 import logging
 import base64
 import glob
+import pickle
+import tempfile
 from adalflow.utils import get_adalflow_default_root_path
 from adalflow.core.db import LocalDB
 from api.config import configs, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
@@ -522,7 +524,8 @@ def prepare_data_pipeline(embedder_type: str = None, is_ollama_embedder: bool = 
     return data_transformer
 
 def transform_documents_and_save_to_db(
-    documents: List[Document], db_path: str, embedder_type: str = None, is_ollama_embedder: bool = None
+    documents: List[Document], db_path: str, embedder_type: str = None, is_ollama_embedder: bool = None,
+    source_revision: str = None, source_directory: str = None,
 ) -> LocalDB:
     """
     Transforms a list of documents and saves them to a local database.
@@ -535,16 +538,43 @@ def transform_documents_and_save_to_db(
         is_ollama_embedder (bool, optional): DEPRECATED. Use embedder_type instead.
                                            If None, will be determined from configuration.
     """
+    from api.index_state import database_problem, embedding_spec
+    from api.index_state import source_revision as current_revision
+
+    if embedder_type is None and is_ollama_embedder is not None:
+        embedder_type = 'ollama' if is_ollama_embedder else None
+
     # Get the data transformer
     data_transformer = prepare_data_pipeline(embedder_type, is_ollama_embedder)
 
     # Save the documents to a local database
     db = LocalDB()
+    db.index_embedding_spec = embedding_spec(embedder_type)
+    db.source_revision = source_revision
     db.register_transformer(transformer=data_transformer, key="split_and_embed")
     db.load(documents)
     db.transform(key="split_and_embed")
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    db.save_state(filepath=db_path)
+    problem = database_problem(db, db.index_embedding_spec)
+    if problem:
+        raise ValueError(f"Embedding generation failed: {problem}")
+    if source_revision and source_directory and current_revision(source_directory) != source_revision:
+        raise ValueError("Source revision changed while generating embeddings; retry indexing.")
+
+    # Publish only a complete, validated cache. A failed build leaves the old
+    # index in place, including when force or a Git update triggered the rebuild.
+    directory = os.path.dirname(db_path) or "."
+    os.makedirs(directory, exist_ok=True)
+    db.index_path = db_path
+    fd, temporary = tempfile.mkstemp(prefix=f".{os.path.basename(db_path)}.", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            pickle.dump(db, output)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, db_path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
     return db
 
 def get_github_file_content(repo_url: str, file_path: str, access_token: str = None) -> str:
@@ -821,7 +851,7 @@ class DatabaseManager:
                          embedder_type: str = None, is_ollama_embedder: bool = None,
                          excluded_dirs: List[str] = None, excluded_files: List[str] = None,
                          included_dirs: List[str] = None, included_files: List[str] = None,
-                         pull: bool = False) -> List[Document]:
+                         pull: bool = False, force_reindex: bool = False) -> List[Document]:
         """
         Create a new database from the repository.
 
@@ -840,6 +870,8 @@ class DatabaseManager:
             pull (bool): If True, run git pull on existing repos to fetch latest
                          changes.  Default False — callers like chat/Ask skip the
                          pull to avoid unnecessary network access.
+            force_reindex (bool): Rebuild even a compatible cache; retain the old
+                                  cache until replacement embeddings are complete.
 
         Returns:
             List[Document]: List of Document objects
@@ -851,14 +883,9 @@ class DatabaseManager:
         self.reset_database()
         has_changes = self._create_repo(repo_url_or_path, repo_type, access_token, pull=pull)
 
-        # If git pull brought new changes, delete old pkl to force re-embedding
-        if has_changes and self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
-            logger.info("Repository has new changes — removing old database %s to force re-embedding",
-                        self.repo_paths["save_db_file"])
-            os.remove(self.repo_paths["save_db_file"])
-
         return self.prepare_db_index(embedder_type=embedder_type, excluded_dirs=excluded_dirs, excluded_files=excluded_files,
-                                   included_dirs=included_dirs, included_files=included_files)
+                                   included_dirs=included_dirs, included_files=included_files,
+                                   force_reindex=force_reindex or bool(has_changes))
 
     def reset_database(self):
         """
@@ -965,7 +992,8 @@ class DatabaseManager:
 
     def prepare_db_index(self, embedder_type: str = None, is_ollama_embedder: bool = None, 
                         excluded_dirs: List[str] = None, excluded_files: List[str] = None,
-                        included_dirs: List[str] = None, included_files: List[str] = None) -> List[Document]:
+                        included_dirs: List[str] = None, included_files: List[str] = None,
+                        force_reindex: bool = False) -> List[Document]:
         """
         Prepare the indexed database for the repository.
 
@@ -982,24 +1010,14 @@ class DatabaseManager:
         Returns:
             List[Document]: List of Document objects
         """
-        def _embedding_vector_length(doc: Document) -> int:
-            vector = getattr(doc, "vector", None)
-            if vector is None:
-                return 0
-            try:
-                if hasattr(vector, "shape"):
-                    if len(vector.shape) == 0:
-                        return 0
-                    return int(vector.shape[-1])
-                if hasattr(vector, "__len__"):
-                    return int(len(vector))
-            except Exception:
-                return 0
-            return 0
+        from api.index_state import database_problem, embedding_spec, source_revision
 
         # Handle backward compatibility
         if embedder_type is None and is_ollama_embedder is not None:
             embedder_type = 'ollama' if is_ollama_embedder else None
+
+        expected = embedding_spec(embedder_type)
+        revision = source_revision(self.repo_paths["save_repo_dir"]) if self.repo_paths else None
 
         pkl_path = self.repo_paths["save_db_file"] if self.repo_paths else "N/A"
         logger.info(
@@ -1010,34 +1028,17 @@ class DatabaseManager:
         )
 
         # check the database
-        if self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
+        if not force_reindex and self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
             pkl_size = os.path.getsize(self.repo_paths["save_db_file"])
             logger.info("Loading existing database (size=%d bytes)...", pkl_size)
             try:
                 self.db = LocalDB.load_state(self.repo_paths["save_db_file"])
                 documents = self.db.get_transformed_data(key="split_and_embed")
-                if documents:
-                    lengths = [_embedding_vector_length(doc) for doc in documents]
-                    non_empty = sum(1 for n in lengths if n > 0)
-                    empty = len(lengths) - non_empty
-                    sample_sizes = sorted({n for n in lengths if n > 0})[:3]
-                    logger.info(
-                        "Loaded %s documents from existing database (embeddings: %s non-empty, %s empty; sample_dims=%s)",
-                        len(documents),
-                        non_empty,
-                        empty,
-                        sample_sizes,
-                    )
-
-                    if non_empty == 0:
-                        logger.warning(
-                            "Existing database contains no usable embeddings. Rebuilding embeddings..."
-                        )
-                    else:
-                        logger.info("[prepare_db_index] Returning %d docs from existing pkl (skipping re-embed)", len(documents))
-                        return documents
-                else:
-                    logger.warning("[prepare_db_index] pkl loaded but get_transformed_data returned None/empty")
+                problem = database_problem(self.db, expected, revision)
+                if problem is None:
+                    logger.info("Reusing %d chunks from compatible code index", len(documents))
+                    return documents
+                logger.info("Rebuilding incompatible/incomplete code index: %s", problem)
             except Exception as e:
                 logger.error(f"Error loading existing database: {e}")
                 # Continue to create a new database
@@ -1061,16 +1062,12 @@ class DatabaseManager:
                         i, len(text) if text else 0, repr((text or "")[:100]))
 
         self.db = transform_documents_and_save_to_db(
-            documents, self.repo_paths["save_db_file"], embedder_type=embedder_type
+            documents, self.repo_paths["save_db_file"], embedder_type=embedder_type,
+            source_revision=revision, source_directory=self.repo_paths["save_repo_dir"],
         )
         logger.info(f"Total documents: {len(documents)}")
         transformed_docs = self.db.get_transformed_data(key="split_and_embed")
         logger.info(f"Total transformed documents: {len(transformed_docs)}")
-
-        # Verify embeddings after creation
-        if transformed_docs:
-            vec_lengths = [_embedding_vector_length(d) for d in transformed_docs[:5]]
-            logger.info("[prepare_db_index] First 5 embedding dims after transform: %s", vec_lengths)
 
         return transformed_docs
 
