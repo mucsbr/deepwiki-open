@@ -74,6 +74,11 @@ class PreviewAccess(FakeAccess):
     async def readers(self, scope, user):
         return [self.repo]
 
+    async def refresh_readers(self, scope, user, on_progress=None):
+        if on_progress:
+            on_progress(self.repo.project, "ready")
+        return [self.repo]
+
 
 @asynccontextmanager
 async def lifespan(app):

@@ -18,6 +18,7 @@
     "reconnecting": "Reconnecting; analysis continues in the background…",
     "empty": "Ask where a feature is implemented, then follow up about its rules or full flow.",
     "progress": "Analysis activity",
+    "draft": "Generating response (not final)…",
     "documents": "Documents",
     "download": "Download Markdown",
     "placeholder": "Ask about this codebase…",

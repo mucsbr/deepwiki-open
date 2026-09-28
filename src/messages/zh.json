@@ -18,6 +18,7 @@
     "reconnecting": "正在重连，分析任务仍在后台运行……",
     "empty": "可以先问某个功能在哪里实现，再追问规则或完整流程。",
     "progress": "分析进度",
+    "draft": "正在生成回复（尚非最终答案）……",
     "documents": "生成文档",
     "download": "下载 Markdown",
     "placeholder": "例如：退款功能在哪里实现？",

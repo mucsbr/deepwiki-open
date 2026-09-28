@@ -110,7 +110,11 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       </div>}
       {chat.session?.runs.map(run => <article key={run.id} className="space-y-3">
         <p className="whitespace-pre-wrap rounded-xl bg-[var(--accent-primary)]/10 p-3 text-sm">{run.message}</p>
-        <div className="px-1"><Markdown content={run.answer} allowHtml={false} /></div>
+        {run.answer && <div className="px-1"><Markdown content={run.answer} allowHtml={false} /></div>}
+        {run.id === lastRun?.id && running && chat.draft && <div className="rounded-lg border border-[var(--border-color)] px-3 py-2">
+          <p className="mb-2 text-xs text-[var(--muted)]">{t('draft', 'Generating response…')}</p>
+          <Markdown content={chat.draft} allowHtml={false} />
+        </div>}
         {!!run.repos?.length && <details className="text-xs text-[var(--muted)]">
           <summary className="cursor-pointer">{t('runSource', 'Source used for this answer')} · {run.repos.length} {t('repositories', 'repositories')}</summary>
           <ul className="mt-2 space-y-1">{run.repos.map(repo => <li key={repo.project}>{repo.project} <code>{repo.commit.slice(0, 12)}</code></li>)}</ul>

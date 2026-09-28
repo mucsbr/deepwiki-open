@@ -7,6 +7,7 @@ import os
 import re
 import time
 from pathlib import Path
+from uuid import uuid4
 
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend
@@ -14,48 +15,31 @@ from deepagents.middleware.filesystem import FilesystemMiddleware
 from fastapi import HTTPException
 from langchain.agents.middleware import (
     AgentMiddleware,
-    ModelCallLimitMiddleware,
     TodoListMiddleware,
 )
-from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
     RemoveMessage,
-    SystemMessage,
     ToolMessage,
 )
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphRecursionError
 
 from .access import Access
+from .dsml import recover_dsml, stream_text
 from .models import build_model
 from .prompts import SYSTEM_PROMPT
 from .repositories import SourceReader
 from .store import ACTIVE, Store
 from .tools import make_tools
+from .wiki import WikiReader
 
 logger = logging.getLogger(__name__)
 
-SOURCE_TOOLS = frozenset(
-    {
-        "list_repositories",
-        "list_source_files",
-        "search_source",
-        "read_source",
-        "search_index",
-        "load_flow_guide",
-        "save_document",
-        "write_todos",
-    }
-)
-RESEARCH_MODEL_CALLS = 18
-FINALIZE_PROMPT = (
-    "The investigation budget is exhausted. Answer now from the source evidence "
-    "already collected. Cite verified source lines, clearly identify unresolved "
-    "steps, and say when a required backend repository is outside the selected "
-    "scope. Do not call any more tools or claim an end-to-end flow without evidence."
-)
+
+class UnrecoveredDsmlError(RuntimeError):
+    """A provider emitted tool markup that could not enter the tool loop."""
 
 
 def text_content(content) -> str:
@@ -82,44 +66,53 @@ def visible_text(text: str) -> str:
 
 
 class AnalysisBoundary(AgentMiddleware):
-    """Expose only source tools and require a final answer after bounded research."""
+    """Expose registered tools and recover DSML before the agent decides its next step."""
 
-    def __init__(self):
+    def __init__(self, tool_names: set[str]):
         super().__init__()
-        self.model_calls = 0
+        self.tool_names = tool_names
 
     async def awrap_model_call(self, request, handler):
-        self.model_calls += 1
         tools = [
             t
             for t in request.tools
-            if getattr(t, "name", "") in SOURCE_TOOLS
+            if getattr(t, "name", "") in self.tool_names
         ]
-        if self.model_calls > RESEARCH_MODEL_CALLS:
-            prompt = request.system_message.text if request.system_message else ""
-            return await handler(
-                request.override(
-                    tools=[],
-                    tool_choice=None,
-                    system_message=SystemMessage(
-                        content=f"{prompt}\n\n{FINALIZE_PROMPT}"
-                    ),
-                )
-            )
-        return await handler(request.override(tools=tools))
+        response = await handler(request.override(tools=tools))
+        messages = [response] if isinstance(response, AIMessage) else response.result
+        for message in messages:
+            if not isinstance(message, AIMessage) or not isinstance(message.content, str):
+                continue
+            cleaned, calls = recover_dsml(message.content)
+            if cleaned == message.content and not calls:
+                continue
+            if not calls and not message.tool_calls:
+                raise UnrecoveredDsmlError
+            message.content = cleaned
+            if calls and not message.tool_calls:
+                message.tool_calls = [
+                    {
+                        "name": call.name,
+                        "args": call.args,
+                        "id": f"dsml_{uuid4().hex}",
+                        "type": "tool_call",
+                    }
+                    for call in calls
+                ]
+        return response
 
     async def awrap_tool_call(self, request, handler):
         import json
 
         call = request.tool_call
         if (
-            call["name"] not in SOURCE_TOOLS
+            call["name"] not in self.tool_names
             or len(json.dumps(call.get("args", {}))) > 250_000
         ):
             return ToolMessage(
                 content=(
-                    "Tool unavailable for source analysis. Use search_source, "
-                    "read_source or search_index."
+                    "Tool unavailable in this conversation. Use one of the "
+                    "registered source tools."
                 ),
                 tool_call_id=call["id"],
                 status="error",
@@ -266,16 +259,19 @@ class Runtime:
                         payload, config=config, version="v2"
                     ):
                         kind, name = event["event"], event.get("name", "")
+                        if event.get("metadata", {}).get("lc_source") == "summarization":
+                            continue
                         if kind == "on_chat_model_start":
-                            current_model_run, answer = event["run_id"], ""
+                            current_model_run, answer, last_emit = event["run_id"], "", 0.0
                         elif (
                             kind == "on_chat_model_stream"
                             and event["run_id"] == current_model_run
                         ):
                             answer += text_content(event["data"]["chunk"].content)
-                            if time.monotonic() - last_emit > 0.15 and answer:
+                            draft = stream_text(visible_text(answer))
+                            if time.monotonic() - last_emit > 0.15 and draft:
                                 self.store.event(
-                                    rid, "text", {"content": visible_text(answer)}
+                                    rid, "draft", {"content": draft}
                                 )
                                 last_emit = time.monotonic()
                         elif kind == "on_tool_start":
@@ -313,34 +309,43 @@ class Runtime:
             answer = visible_text(text_content(last.content))
             if not answer.strip():
                 raise RuntimeError("Model returned an empty final answer.")
+            if recover_dsml(answer) != (answer, []):
+                raise UnrecoveredDsmlError
             self.store.event(rid, "text", {"content": answer})
             self.store.set_status(rid, "completed", answer=answer)
         except asyncio.CancelledError as exc:
             status = (
                 "interrupted" if exc.args and exc.args[0] == "shutdown" else "cancelled"
             )
-            self.store.set_status(rid, status, answer=visible_text(answer))
+            self.store.set_status(rid, status, answer=stream_text(visible_text(answer)))
         except TimeoutError:
             self.store.set_status(
                 rid,
                 "interrupted",
-                answer=visible_text(answer),
+                answer=stream_text(visible_text(answer)),
                 error="Run time limit reached. Resume to continue.",
             )
         except HTTPException as exc:
             self.store.set_status(
                 rid,
                 "failed",
-                answer=visible_text(answer),
+                answer=stream_text(visible_text(answer)),
                 error=str(exc.detail),
             )
-        except (GraphRecursionError, ModelCallLimitExceededError):
+        except UnrecoveredDsmlError:
             self.store.set_status(
                 rid,
                 "interrupted",
-                answer=visible_text(answer),
+                answer=stream_text(visible_text(answer)),
+                error="The model emitted tool-call markup that could not be recovered. Resume or switch models.",
+            )
+        except GraphRecursionError:
+            self.store.set_status(
+                rid,
+                "interrupted",
+                answer=stream_text(visible_text(answer)),
                 error=(
-                    "Analysis kept requesting tools without a final answer. "
+                    "Analysis did not reach a final answer. "
                     "Review the selected repositories, then resume or narrow the question."
                 ),
             )
@@ -349,7 +354,7 @@ class Runtime:
             self.store.set_status(
                 rid,
                 "failed",
-                answer=visible_text(answer),
+                answer=stream_text(visible_text(answer)),
                 error=f"Analysis failed ({type(exc).__name__}). Check model tool-calling support, provider availability and repository access, then resume.",
             )
         finally:
@@ -368,9 +373,9 @@ class Runtime:
             min(budget, known_limit) if isinstance(known_limit, int) else budget
         )
         model.profile = profile
-        tools = make_tools(
-            SourceReader(repos), self.data_root, self.store, run, authorize
-        )
+        reader = SourceReader(repos)
+        wiki = WikiReader(reader, self.data_root, session["language"])
+        tools = make_tools(reader, self.data_root, self.store, run, authorize, wiki=wiki)
         backend = StateBackend()
         return create_deep_agent(
             model=model,
@@ -381,14 +386,14 @@ class Runtime:
                 revisions="\n".join(
                     f"- {repo.project} @ {repo.commit}" for repo in repos
                 ),
+                wiki_overview=wiki.prompt_context(),
             ),
             middleware=[
                 # Deep Agents needs read_file internally for summarized state;
                 # AnalysisBoundary keeps it invisible to the model.
                 FilesystemMiddleware(backend=backend, tools=["read_file"]),
-                AnalysisBoundary(),
+                AnalysisBoundary({tool.name for tool in tools} | {"write_todos"}),
                 TodoListMiddleware(),
-                ModelCallLimitMiddleware(run_limit=24, exit_behavior="error"),
             ],
             checkpointer=self.checkpointer,
             name="deepwiki_ask",

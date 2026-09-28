@@ -715,6 +715,86 @@ def test_existing_index_is_filtered_and_never_rebuilt(repository, monkeypatch):
         search.search("submit", "other/private")
 
 
+def test_semantic_search_reports_embedding_channel_failure_and_partial_coverage(repository, monkeypatch):
+    from types import SimpleNamespace
+
+    from adalflow.core.db import LocalDB
+    from adalflow.core.types import Document
+
+    from api.agent.repositories import IndexSearch
+
+    root, repo = repository
+    (root / "databases").mkdir()
+    db = LocalDB(transformed_items={"split_and_embed": [
+        Document(text="submit", vector=[1.0, 0.0], meta_data={"file_path": "order.py"}),
+        Document(text="unfinished chunk", vector=[], meta_data={"file_path": "order.py"}),
+    ]})
+    db.save_state(str(root / "databases" / "group_demo.pkl"))
+
+    monkeypatch.setattr(
+        "api.tools.embedder.get_embedder",
+        lambda **_kwargs: lambda _queries: SimpleNamespace(
+            data=[], error="503 model_not_found private-provider-detail"
+        ),
+    )
+    with pytest.raises(ValueError, match="embedding gateway has no available channel") as error:
+        IndexSearch(SourceReader([repo]), root).search("submit")
+    assert "private-provider-detail" not in str(error.value)
+
+    monkeypatch.setattr(
+        "api.tools.embedder.get_embedder",
+        lambda **_kwargs: lambda _queries: SimpleNamespace(
+            data=[SimpleNamespace(embedding=[1.0, 0.0])]
+        ),
+    )
+    result = IndexSearch(SourceReader([repo]), root).search("submit")
+    assert result["index_coverage"] == [{
+        "repo": repo.project, "index_available": True, "indexed_chunks": 1, "missing_vectors": 1,
+    }]
+    assert len(result["matches"]) == 1
+
+
+def test_changed_embedding_model_is_not_mixed_even_at_same_dimension(repository, monkeypatch):
+    from types import SimpleNamespace
+
+    from adalflow.core.db import LocalDB
+    from adalflow.core.types import Document
+
+    from api.agent.repositories import IndexSearch
+
+    root, repo = repository
+    (root / "databases").mkdir()
+    (root / "databases" / "group_demo.pkl").touch()
+    component = SimpleNamespace(model_kwargs={"model": "text-embedding-3-small"})
+    database = SimpleNamespace(
+        transformer_setups={"split_and_embed": SimpleNamespace(named_components=lambda: [("embedder", component)])},
+        get_transformed_data=lambda **_kwargs: [Document(text="submit", vector=[1.0, 0.0], meta_data={"file_path": "order.py"})],
+    )
+    monkeypatch.setattr(LocalDB, "load_state", lambda _path: database)
+    monkeypatch.setattr("api.config.get_embedder_config", lambda: {"model_kwargs": {"model": "Qwen/Qwen3-Embedding-4B"}})
+
+    def forbidden(**_kwargs):
+        raise AssertionError("A mismatched index must not request a query embedding")
+
+    monkeypatch.setattr("api.tools.embedder.get_embedder", forbidden)
+    result = IndexSearch(SourceReader([repo]), root).search("submit")
+    assert result["matches"] == []
+    assert result["index_coverage"][0]["indexed_models"] == ["text-embedding-3-small"]
+    assert "rebuild" in result["index_coverage"][0]["reason"]
+
+    component.model_kwargs["model"] = "Qwen/Qwen3-Embedding-4B"
+    queries = []
+
+    def embed(inputs):
+        queries.extend(inputs)
+        return SimpleNamespace(data=[SimpleNamespace(embedding=[1.0, 0.0])])
+
+    monkeypatch.setattr("api.tools.embedder.get_embedder", lambda **_kwargs: embed)
+    assert IndexSearch(SourceReader([repo]), root).search("微信任务")["matches"]
+    assert queries[0].startswith("Instruct: ")
+    assert queries[0].endswith("Query:微信任务")
+
+
 def test_api_ownership_revocation_and_replay(repository):
     root, repo = repository
     rt = Runtime(root / "api-test", root, access=FakeAccess())
@@ -849,7 +929,8 @@ def test_api_selected_scope_and_duplicate_submission(repository, monkeypatch):
         assert b"fixture-private-token" not in path.read_bytes()
 
 
-def test_openai_compatible_streaming_tool_protocol(repository):
+@pytest.mark.parametrize("wire_format", ["native", "dsml"])
+def test_openai_compatible_streaming_tool_protocol(repository, wire_format):
     import httpx
     from langchain_openai import ChatOpenAI
 
@@ -873,6 +954,16 @@ def test_openai_compatible_streaming_tool_protocol(repository):
             )
             if any(message["role"] == "tool" for message in body["messages"]):
                 delta = {"content": "Source confirmed."}
+                finish = "stop"
+            elif wire_format == "dsml":
+                delta = {
+                    "content": (
+                        '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read_source">'
+                        '<｜｜DSML｜｜ parameter name="repo" string="true">group/demo</｜｜DSML｜｜ parameter>'
+                        '<｜｜DSML｜｜ parameter name="path" string="true">order.py</｜｜DSML｜｜ parameter>'
+                        '</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>'
+                    )
+                }
                 finish = "stop"
             else:
                 delta = {
@@ -940,6 +1031,13 @@ def test_openai_compatible_streaming_tool_protocol(repository):
                 rt.launch(run, session, [repo], {"gitlab_user_id": 1}, model)
                 await rt.tasks[run["id"]]
                 assert rt.store.get_run(run["id"])["answer"] == "Source confirmed."
+                events = rt.store.events(run["id"])
+                assert any(
+                    event["type"] == "draft"
+                    and event["data"]["content"] == "Source confirmed."
+                    for event in events
+                )
+                assert sum(event["type"] == "text" for event in events) == 1
                 assert len(calls) == 2
                 assert any(
                     m["role"] == "tool" and "submitted" in m["content"]
@@ -951,11 +1049,9 @@ def test_openai_compatible_streaming_tool_protocol(repository):
     asyncio.run(check())
 
 
-def test_tool_only_model_is_forced_to_answer_before_graph_limit(repository):
+def test_agent_can_continue_past_previous_fixed_research_limit(repository):
     import httpx
     from langchain_openai import ChatOpenAI
-
-    from api.agent.runtime import RESEARCH_MODEL_CALLS
 
     async def check():
         root, repo = repository
@@ -964,7 +1060,7 @@ def test_tool_only_model_is_forced_to_answer_before_graph_limit(repository):
         async def respond(request):
             body = json.loads(request.content)
             calls.append(body)
-            if body.get("tools"):
+            if len(calls) <= 20:
                 delta = {
                     "tool_calls": [
                         {
@@ -1040,8 +1136,8 @@ def test_tool_only_model_is_forced_to_answer_before_graph_limit(repository):
                 rt.launch(run, session, [repo], {"gitlab_user_id": 1}, model)
                 await rt.tasks[run["id"]]
                 assert rt.store.get_run(run["id"])["status"] == "completed"
-                assert len(calls) == RESEARCH_MODEL_CALLS + 1
-                assert not calls[-1].get("tools")
+                assert len(calls) == 21
+                assert calls[-1].get("tools")
                 assert (
                     "backend implementation"
                     in rt.store.get_run(run["id"])["answer"]
@@ -1096,6 +1192,160 @@ def test_reasoning_filter():
         )
         == "answer"
     )
+
+
+def test_dsml_recovery_and_stream_redaction():
+    from api.agent.dsml import recover_dsml, stream_text
+
+    text = (
+        '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read_source">'
+        '<｜｜DSML｜｜ parameter name="repo" string="true">group/demo</｜｜DSML｜｜ parameter>'
+        '<｜｜DSML｜｜ parameter name="start_line" string="false">12</｜｜DSML｜｜ parameter>'
+        '</｜｜DSML｜｜ invoke><｜｜DSML｜｜ invoke name="search_source">'
+        '<｜｜DSML｜｜ parameter name="query" string="true">submit</｜｜DSML｜｜ parameter>'
+        '</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>'
+    )
+    cleaned, calls = recover_dsml(text)
+    assert cleaned == ""
+    assert [(call.name, call.args) for call in calls] == [
+        ("read_source", {"repo": "group/demo", "start_line": 12}),
+        ("search_source", {"query": "submit"}),
+    ]
+    assert stream_text(text[:80]) == ""
+    fenced = f"```text\n{text}\n```"
+    assert recover_dsml(fenced) == (fenced, [])
+    assert recover_dsml("ordinary answer") == ("ordinary answer", [])
+
+
+def test_dsml_text_becomes_executable_agent_tool_call(repository):
+    async def check():
+        root, repo = repository
+        rt = Runtime(root / "dsml", root, access=FakeAccess())
+        await rt.start()
+        try:
+            session = rt.store.create_session("1", [repo.public()], "en")
+            run = rt.store.create_run(
+                session["id"], str(uuid4()), "Find submit", "test", "test"
+            )
+            model = TestModel(
+                responses=[
+                    AIMessage(
+                        content=(
+                            '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read_source">'
+                            '<｜｜DSML｜｜ parameter name="repo" string="true">group/demo</｜｜DSML｜｜ parameter>'
+                            '<｜｜DSML｜｜ parameter name="path" string="true">order.py</｜｜DSML｜｜ parameter>'
+                            '</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>'
+                        )
+                    ),
+                    AIMessage(content="Submit is in order.py."),
+                ]
+            )
+            rt.launch(run, session, [repo], {"gitlab_user_id": 1}, model)
+            await rt.tasks[run["id"]]
+            assert rt.store.get_run(run["id"])["answer"] == "Submit is in order.py."
+            events = rt.store.events(run["id"])
+            assert any(
+                event["type"] == "tool_start"
+                and event["data"]["name"] == "read_source"
+                for event in events
+            )
+            assert not any(
+                event["type"] in {"text", "draft"}
+                and "DSML" in event["data"].get("content", "")
+                for event in events
+            )
+        finally:
+            await rt.close()
+
+    asyncio.run(check())
+
+
+def test_dsml_does_not_duplicate_native_tool_calls(repository):
+    async def check():
+        root, repo = repository
+        rt = Runtime(root / "dsml-native", root, access=FakeAccess())
+        await rt.start()
+        try:
+            session = rt.store.create_session("1", [repo.public()], "en")
+            run = rt.store.create_run(
+                session["id"], str(uuid4()), "Find submit", "test", "test"
+            )
+            model = TestModel(
+                responses=[
+                    AIMessage(
+                        content=(
+                            '<｜DSML｜tool_calls><｜DSML｜invoke name="read_source">'
+                            '</｜DSML｜invoke></｜DSML｜tool_calls>'
+                        ),
+                        tool_calls=[{
+                            "name": "read_source",
+                            "args": {"repo": "group/demo", "path": "order.py"},
+                            "id": "native-read",
+                            "type": "tool_call",
+                        }],
+                    ),
+                    AIMessage(content="Found it."),
+                ]
+            )
+            rt.launch(run, session, [repo], {"gitlab_user_id": 1}, model)
+            await rt.tasks[run["id"]]
+            events = rt.store.events(run["id"])
+            assert sum(
+                event["type"] == "tool_start"
+                and event["data"]["name"] == "read_source"
+                for event in events
+            ) == 1
+            assert rt.store.get_run(run["id"])["answer"] == "Found it."
+        finally:
+            await rt.close()
+
+    asyncio.run(check())
+
+
+def test_internal_summarization_is_not_streamed_as_answer(repository):
+    from types import SimpleNamespace
+
+    async def check():
+        root, repo = repository
+        rt = Runtime(root / "summary-events", root, access=FakeAccess())
+        await rt.start()
+        try:
+            session = rt.store.create_session("1", [repo.public()], "en")
+            run = rt.store.create_run(
+                session["id"], str(uuid4()), "Find submit", "test", "test"
+            )
+
+            class EventsGraph:
+                def __init__(self):
+                    self.calls = 0
+
+                async def aget_state(self, _config):
+                    self.calls += 1
+                    return SimpleNamespace(
+                        values={"messages": [] if self.calls == 1 else [AIMessage(content="Visible answer")]},
+                        next=(),
+                    )
+
+                async def astream_events(self, _payload, **_kwargs):
+                    yield {"event": "on_chat_model_start", "run_id": "summary", "metadata": {"lc_source": "summarization"}}
+                    yield {"event": "on_chat_model_stream", "run_id": "summary", "metadata": {"lc_source": "summarization"}, "data": {"chunk": AIMessage(content="HIDDEN_INTERNAL_SUMMARY")}}
+                    yield {"event": "on_chat_model_start", "run_id": "answer", "metadata": {}}
+                    yield {"event": "on_chat_model_stream", "run_id": "answer", "metadata": {}, "data": {"chunk": AIMessage(content="Visible answer")}}
+
+            rt.create_graph = lambda *_args: EventsGraph()
+            rt.launch(
+                run, session, [repo], {"gitlab_user_id": 1},
+                TestModel(responses=[AIMessage(content="unused")]),
+            )
+            await rt.tasks[run["id"]]
+            events = rt.store.events(run["id"])
+            assert rt.store.get_run(run["id"])["answer"] == "Visible answer"
+            assert any(event["type"] == "draft" and event["data"]["content"] == "Visible answer" for event in events)
+            assert not any("HIDDEN_INTERNAL_SUMMARY" in str(event["data"]) for event in events)
+        finally:
+            await rt.close()
+
+    asyncio.run(check())
 
 
 def test_custom_model_context_budget(repository, monkeypatch):

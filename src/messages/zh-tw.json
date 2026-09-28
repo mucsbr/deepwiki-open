@@ -15,6 +15,7 @@
     "reconnecting": "正在重新連線，分析仍在背景執行……",
     "empty": "可以先問某個功能在哪裡實作，再追問規則或完整流程。",
     "progress": "分析進度",
+    "draft": "正在產生回覆（尚非最終答案）……",
     "documents": "產生文件",
     "download": "下載 Markdown",
     "placeholder": "詢問此程式碼庫……",

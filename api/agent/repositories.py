@@ -281,67 +281,133 @@ class SourceReader:
 
 
 class IndexSearch:
-    """Load existing embedding databases only; never invoke prepare_database."""
+    """Search existing code embeddings only; never invoke prepare_database."""
 
     def __init__(self, reader: SourceReader, data_root: Path):
         self.reader, self.data_root = reader, data_root
         self.retrievers = {}
 
-    def search(self, query: str, project: str = "", source: str = "code") -> dict:
+    def search(self, query: str, project: str = "") -> dict:
         from adalflow.components.retriever.faiss_retriever import FAISSRetriever
         from adalflow.core.db import LocalDB
 
-        from api.config import get_embedder_type
+        from api.config import get_embedder_config, get_embedder_type
         from api.tools.embedder import get_embedder
 
-        if source not in {"code", "wiki"} or not query.strip() or len(query) > 2000:
-            raise ValueError("Use source=code|wiki and a query of 1–2000 characters.")
+        if not query.strip() or len(query) > 2000:
+            raise ValueError("Use a code-search query of 1–2000 characters.")
         projects = [project] if project else list(self.reader.repos)
         for name in projects:
             self.reader.repository(name)
-        key = (tuple(projects), source)
+        config = get_embedder_config()
+        model = config.get("model_kwargs", {}).get("model", "")
+        key = tuple(projects)
         if key not in self.retrievers:
-            docs, origins = [], {}
+            docs, origins, coverage = [], {}, []
             for name in projects:
                 repo = self.reader.repository(name)
-                filename = (
-                    repo.root.name + ("_wiki" if source == "wiki" else "") + ".pkl"
-                )
+                filename = repo.root.name + ".pkl"
                 path = self.data_root / "databases" / filename
                 if not path.is_file() or path.is_symlink():
+                    coverage.append(
+                        {"repo": name, "index_available": False, "indexed_chunks": 0}
+                    )
                     continue
                 db = LocalDB.load_state(str(path))
+                indexed_models = {
+                    str(component.model_kwargs["model"])
+                    for transformer in db.transformer_setups.values()
+                    for _, component in transformer.named_components()
+                    if isinstance(getattr(component, "model_kwargs", None), dict)
+                    and component.model_kwargs.get("model")
+                }
+                if indexed_models and indexed_models != {model}:
+                    coverage.append({
+                        "repo": name,
+                        "index_available": True,
+                        "indexed_chunks": 0,
+                        "indexed_models": sorted(indexed_models),
+                        "query_model": model,
+                        "reason": "Embedding model changed; rebuild this code index before semantic search.",
+                    })
+                    continue
                 loaded = db.get_transformed_data(key="split_and_embed") or []
+                usable, missing = 0, 0
                 for doc in loaded:
                     meta = doc.meta_data or {}
-                    if source == "code" and meta.get(
-                        "file_path"
-                    ) not in self.reader.tree(name):
+                    if meta.get("file_path") not in self.reader.tree(name):
                         continue
                     vector = getattr(doc, "vector", None)
                     if vector is None or len(vector) == 0:
+                        missing += 1
                         continue
                     origins[id(doc)] = name
                     docs.append(doc)
+                    usable += 1
+                coverage.append({
+                    "repo": name,
+                    "index_available": True,
+                    "indexed_chunks": usable,
+                    "missing_vectors": missing,
+                })
             if not docs:
                 return {
                     "matches": [],
-                    "notice": "No existing index for this scope/source. Use exact search and read_source.",
+                    "index_coverage": coverage,
+                    "notice": "No compatible code index for this scope. See index_coverage for model changes or missing indexes. Use Wiki, exact search and read_source until code indexes are rebuilt.",
                 }
-            embedder = get_embedder(embedder_type=get_embedder_type())
-            query_embedder = (
-                (lambda queries: embedder(input=queries[0]))
-                if get_embedder_type() == "ollama"
-                else embedder
-            )
+            embedder_type = get_embedder_type()
+            embedder = get_embedder(embedder_type=embedder_type)
+
+            def query_embedder(queries):
+                # AdalFlow can return error + empty data instead of raising. Letting
+                # that reach FAISS produces an unrelated array-shape ValueError.
+                try:
+                    instruction = config.get("query_instruction", "")
+                    if not instruction and "qwen3-embedding" in model.lower():
+                        instruction = "Given a code-search query, retrieve source code snippets that implement the described behavior."
+                    inputs = (
+                        [f"Instruct: {instruction}\nQuery:{query}" for query in queries]
+                        if instruction else queries
+                    )
+                    result = embedder(inputs[0] if embedder_type == "ollama" else inputs)
+                except Exception as exc:
+                    raise ValueError(
+                        "Code semantic search cannot embed this query because the embedding "
+                        "service failed. Use Wiki and exact source search; the configured "
+                        "embedding service must be restored."
+                    ) from exc
+                error = getattr(result, "error", None)
+                data = getattr(result, "data", None)
+                if error or not data or len(data) != len(queries):
+                    reason = (
+                        "the embedding gateway has no available channel for the configured model"
+                        if "model_not_found" in str(error) or "No available channel" in str(error)
+                        else "the embedding service returned no usable query vector"
+                    )
+                    raise ValueError(
+                        f"Code semantic search is unavailable: {reason}. Existing index files "
+                        "still require a query embedding. Use Wiki and exact source search; "
+                        "do not repeatedly retry this unavailable service."
+                    )
+                for item in data:
+                    vector = getattr(item, "embedding", None)
+                    if vector is None or len(vector) != len(docs[0].vector):
+                        raise ValueError(
+                            "The query embedding dimensions do not match the code index. Restore "
+                            "the same embedding model/dimensions used for indexing. Use Wiki and "
+                            "exact source search meanwhile."
+                        )
+                return result
+
             retriever = FAISSRetriever(
                 top_k=min(8, len(docs)),
                 embedder=query_embedder,
                 documents=docs,
                 document_map_func=lambda doc: doc.vector,
             )
-            self.retrievers[key] = (retriever, docs, origins)
-        retriever, docs, origins = self.retrievers[key]
+            self.retrievers[key] = (retriever, docs, origins, coverage)
+        retriever, docs, origins, coverage = self.retrievers[key]
         results = retriever(query)
         selected = results[0].doc_indices if results else []
         return {
@@ -349,10 +415,11 @@ class IndexSearch:
                 {
                     "repo": origins[id(docs[i])],
                     "path": docs[i].meta_data.get("file_path"),
-                    "page": docs[i].meta_data.get("page_title"),
                     "text": docs[i].text[:3500],
                 }
                 for i in selected
             ],
-            "notice": "Index/Wiki results are candidates, possibly from a different revision. Confirm with read_source.",
+            "search_mode": "semantic_code",
+            "index_coverage": coverage,
+            "notice": "Code index results are candidates, possibly from a different revision. Confirm with read_source.",
         }
