@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import mermaid from 'mermaid';
 // We'll use dynamic import for svg-pan-zoom
 
@@ -305,6 +305,7 @@ const FullScreenModal: React.FC<{
 
 const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled = false }) => {
   const [svg, setSvg] = useState<string>('');
+  const markup = useMemo(() => ({ __html: svg }), [svg]);
   const [error, setError] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const mermaidRef = useRef<HTMLDivElement>(null);
@@ -449,7 +450,7 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled
         >
           <div
             className={`flex justify-center overflow-auto text-center my-2 cursor-pointer hover:shadow-md transition-shadow duration-200 rounded-md ${className} ${zoomingEnabled ? "h-full" : ""}`}
-            dangerouslySetInnerHTML={{ __html: svg }}
+            dangerouslySetInnerHTML={markup}
             onClick={zoomingEnabled ? undefined : handleDiagramClick}
             title={zoomingEnabled ? undefined : "Click to view fullscreen"}
           />
@@ -473,7 +474,7 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled
           isOpen={isFullscreen}
           onClose={() => setIsFullscreen(false)}
         >
-          <div dangerouslySetInnerHTML={{ __html: svg }} />
+          <div dangerouslySetInnerHTML={markup} />
         </FullScreenModal>
       )}
     </>
@@ -482,4 +483,4 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled
 
 
 
-export default Mermaid;
+export default React.memo(Mermaid);

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -13,7 +13,9 @@ interface MarkdownProps {
 
 const Markdown: React.FC<MarkdownProps> = ({ content, allowHtml = true }) => {
   // Define markdown components
-  const MarkdownComponents: React.ComponentProps<typeof ReactMarkdown>['components'] = {
+  // Stable renderer types preserve diagram/code DOM across parent scroll state
+  // changes and streaming text updates. New component types would remount them.
+  const MarkdownComponents = useMemo<React.ComponentProps<typeof ReactMarkdown>['components']>(() => ({
     ...(!allowHtml ? { img: ({ alt }: { alt?: string }) => <span>{alt || ''}</span> } : {}),
     p({ children, ...props }: { children?: React.ReactNode }) {
       return <p className="mb-3 text-sm leading-relaxed dark:text-white" {...props}>{children}</p>;
@@ -192,7 +194,7 @@ const Markdown: React.FC<MarkdownProps> = ({ content, allowHtml = true }) => {
         </code>
       );
     },
-  };
+  }), [allowHtml]);
 
   return (
     <div className="prose prose-base dark:prose-invert max-w-none px-2 py-4">
@@ -208,4 +210,4 @@ const Markdown: React.FC<MarkdownProps> = ({ content, allowHtml = true }) => {
   );
 };
 
-export default Markdown;
+export default React.memo(Markdown);

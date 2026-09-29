@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { useAgentConversation } from '@/hooks/useAgentConversation';
+import { useChatScroll } from '@/hooks/useChatScroll';
 import getRepoUrl from '@/utils/getRepoUrl';
 import { agentRequest } from '@/utils/agentClient';
 import Markdown from '@/components/Markdown';
@@ -31,14 +32,11 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
   const [comprehensive, setComprehensive] = useState(true);
   const [activeDocument, setActiveDocument] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
-  const transcript = useRef<HTMLDivElement>(null);
-  const transcriptContent = useRef<HTMLDivElement>(null);
-  const followOutput = useRef(true);
-  const [following, setFollowing] = useState(true);
   const primary = isGlobalAsk ? '' : getRepoUrl(repoInfo);
   const scopeKey = JSON.stringify([...new Set([primary, ...relatedRepos].filter(Boolean))].sort());
   const repos: string[] = useMemo(() => JSON.parse(scopeKey), [scopeKey]);
   const lastRun = chat.session?.runs.at(-1);
+  const { transcript, transcriptContent, following, jumpToLatest } = useChatScroll(`${chat.session?.id ?? ''}/${lastRun?.id ?? ''}`);
   const running = isActive(lastRun?.status);
   const currentPlan = lastRun && chat.activities[lastRun.id]?.items.findLast(item => item.kind === 'plan');
   const unfinished = !!lastRun && lastRun.status !== 'completed';
@@ -60,21 +58,6 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
     }).catch(() => {});
     return () => { live = false; };
   }, [provider, model, token]);
-  useEffect(() => {
-    followOutput.current = true; setFollowing(true);
-    const view = transcript.current;
-    if (view) view.scrollTop = view.scrollHeight;
-  }, [chat.session?.id, lastRun?.id]);
-  useEffect(() => {
-    const content = transcriptContent.current;
-    if (!content) return;
-    const observer = new ResizeObserver(() => {
-      const view = transcript.current;
-      if (view && followOutput.current) view.scrollTop = view.scrollHeight;
-    });
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, []);
 
   const newConversation = () => { chat.reset(); setQuestion(''); setActiveDocument(''); };
   const send = async (event: React.FormEvent) => {
@@ -123,14 +106,11 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       {chat.refresh.repo && ` · ${chat.refresh.repo}`}
     </p>}
 
+    <div className="relative">
     <div ref={transcript} role="region" aria-label={t('conversation', 'Conversation')} tabIndex={0}
-      className="max-h-[65vh] min-h-48 overflow-y-auto overscroll-contain pr-2 [overflow-anchor:none]"
-      onScroll={event => {
-        const view = event.currentTarget;
-        const nearBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 64;
-        followOutput.current = nearBottom; setFollowing(nearBottom);
-      }}>
-    <div ref={transcriptContent} className="space-y-5">
+      className="max-h-[65dvh] min-h-48 overflow-y-auto overscroll-contain scroll-auto pr-2 [overflow-anchor:none]">
+    <div ref={transcriptContent} className="flow-root">
+    <div className="space-y-5 pb-4">
       {!chat.session?.runs.length && <div className="rounded-xl border border-dashed border-[var(--border-color)] p-6 text-sm text-[var(--muted)]">
         {t('empty', 'Ask where a feature is implemented, then follow up about its rules or full flow.')}
       </div>}
@@ -150,12 +130,12 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
           <button className="btn-apple-secondary px-3 py-2 text-sm" disabled={chat.pending} onClick={() => void chat.control(run.id, 'resume', { provider: selectedProvider, model: custom ? customValue : selectedModel })}>{t('resume', 'Resume analysis')}</button>}
       </article>)}
     </div>
+    <div data-chat-scroll-end aria-hidden="true" className="h-px" />
     </div>
-    {!following && <div className="flex justify-center"><button type="button" className="btn-apple-secondary px-3 py-1.5 text-xs"
-      onClick={() => {
-        followOutput.current = true; setFollowing(true);
-        if (transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight;
-      }}>{t('jumpLatest', '↓ Back to latest activity')}</button></div>}
+    </div>
+    {!following && <button type="button" className="btn-apple-secondary absolute bottom-3 right-4 z-10 px-3 py-1.5 text-xs shadow-sm"
+      onClick={jumpToLatest}>{t('jumpLatest', '↓ Back to latest activity')}</button>}
+    </div>
     {running && currentPlan && currentPlan.todos.length > 0 && <aside aria-label={t('currentPlan', 'Current plan')}
       className="rounded-xl border border-[var(--accent-primary)]/25 bg-[var(--accent-primary)]/5 p-3 text-sm">
       <h3 className="text-xs font-semibold">{t('currentPlan', 'Current plan')} · {currentPlan.todos.filter(todo => todo.status === 'completed').length}/{currentPlan.todos.length}</h3>

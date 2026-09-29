@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test:agent-ui": "node --test tests/frontend/agentActivity.test.cjs"
+    "test:agent-ui": "node --test tests/frontend/*.test.cjs"
   },
   "dependencies": {
     "mermaid": "^11.4.1",
