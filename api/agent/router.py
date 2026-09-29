@@ -127,9 +127,15 @@ async def create_session(body: NewSession, request: Request, user: AgentUser):
 async def get_session(sid: UUID, request: Request, user: AgentUser):
     rt = runtime(request)
     session = await session_for(rt, str(sid), user)
+    def runs_with_activity():
+        return [
+            {**run, "activity": rt.store.activity(run["id"])}
+            for run in rt.store.runs(str(sid))
+        ]
+
     return {
         **session,
-        "runs": rt.store.runs(str(sid)),
+        "runs": await asyncio.to_thread(runs_with_activity),
         "documents": rt.store.documents(str(sid)),
     }
 

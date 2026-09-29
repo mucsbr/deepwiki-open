@@ -2,21 +2,25 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { agentRequest, agentRequestId, streamAgentEvents } from '@/utils/agentClient';
-import { isActive, type AgentDocument, type AgentEvent, type AgentRun, type AgentSession, type SessionDetail, type ToolProgress } from '@/components/agent/types';
+import { isActive, type AgentDocument, type AgentEvent, type AgentRun, type AgentSession, type SessionDetail, type RunActivity } from '@/components/agent/types';
+import { applyAgentEvent, emptyActivity, replayActivity } from '@/utils/agentActivity';
 
 export function useAgentConversation(token: string | null) {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
-  const [tools, setTools] = useState<ToolProgress[]>([]);
-  const [todos, setTodos] = useState<{ content: string; status: string }[]>([]);
+  const [activities, setActivities] = useState<Record<string, RunActivity>>({});
   const [reconnecting, setReconnecting] = useState(false);
   const [refresh, setRefresh] = useState<{ repo: string; phase: string } | null>(null);
-  const [draft, setDraft] = useState('');
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const controller = useRef<AbortController | null>(null);
   const selected = useRef<string | null>(null);
+
+  const hydrate = useCallback((detail: SessionDetail) => {
+    setSession(detail);
+    setActivities(Object.fromEntries(detail.runs.map(run => [run.id, replayActivity(run.activity)])));
+  }, []);
 
   const refreshHistory = useCallback(async (offset = 0) => {
     if (!token) return;
@@ -27,7 +31,7 @@ export function useAgentConversation(token: string | null) {
 
   const reset = useCallback(() => {
     controller.current?.abort(); selected.current = null;
-    setSession(null); setTools([]); setTodos([]); setError(''); setReconnecting(false); setRefresh(null); setDraft('');
+    setSession(null); setActivities({}); setError(''); setReconnecting(false); setRefresh(null);
   }, []);
 
   useEffect(() => {
@@ -36,18 +40,18 @@ export function useAgentConversation(token: string | null) {
     return () => controller.current?.abort();
   }, [token, refreshHistory, reset]);
 
-  const connect = useCallback(async (sid: string, rid: string) => {
+  const connect = useCallback(async (sid: string, rid: string, after = 0) => {
     if (!token) return;
     controller.current?.abort();
     const abort = new AbortController(); controller.current = abort;
-    setTools([]); setTodos([]); setRefresh(null); setDraft('');
-    let cursor = 0; let failures = 0;
+    setRefresh(null);
+    let cursor = after; let failures = 0;
     while (!abort.signal.aborted && selected.current === sid) {
       try {
         await streamAgentEvents(token, rid, cursor, abort.signal, (event: AgentEvent) => {
           if (abort.signal.aborted || selected.current !== sid || event.id <= cursor) return;
           cursor = event.id; setReconnecting(false);
-          if (event.type === 'draft') setDraft(event.data.content ?? '');
+          setActivities(previous => ({ ...previous, [rid]: applyAgentEvent(previous[rid] ?? emptyActivity(), event) }));
           if (event.type === 'text' || event.type === 'status') {
             setSession(previous => previous?.id !== sid ? previous : {
               ...previous, runs: previous.runs.map(run => run.id !== rid ? run : {
@@ -57,12 +61,6 @@ export function useAgentConversation(token: string | null) {
               }),
             });
           }
-          if (event.type === 'tool_start' && event.data.id) {
-            const item = { id: event.data.id, name: event.data.name ?? '', done: false, error: false };
-            setTools(previous => [...previous, item]);
-          }
-          if (event.type === 'tool_end') setTools(previous => previous.map(tool => tool.id !== event.data.id ? tool : { ...tool, done: true, error: !!event.data.error }));
-          if (event.type === 'plan') setTodos(event.data.todos ?? []);
           if (event.type === 'refresh' && event.data.repo !== undefined && event.data.phase)
             setRefresh({ repo: event.data.repo, phase: event.data.phase });
           if (event.type === 'source_scope' && event.data.repos)
@@ -72,13 +70,15 @@ export function useAgentConversation(token: string | null) {
               runs: previous.runs.map(run => run.id !== rid ? run : { ...run, repos: event.data.repos! }),
             });
           if (event.type === 'status' && event.data.status && !isActive(event.data.status)) {
-            setRefresh(null); setDraft('');
+            setRefresh(null);
           }
         });
         const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`, undefined, abort.signal);
         if (selected.current !== sid || abort.signal.aborted) return;
-        setSession(detail);
-        if (!isActive(detail.runs.find(run => run.id === rid)?.status)) { await refreshHistory(); return; }
+        hydrate(detail);
+        const latest = detail.runs.find(run => run.id === rid);
+        cursor = latest?.activity?.cursor ?? cursor;
+        if (!isActive(latest?.status)) { await refreshHistory(); return; }
         // EOF may be a proxy timeout. Reconnect from the last persisted event.
         failures++;
       } catch (e) {
@@ -90,25 +90,25 @@ export function useAgentConversation(token: string | null) {
       setReconnecting(true);
       await new Promise(resolve => setTimeout(resolve, Math.min(1000 * failures, 5000)));
     }
-  }, [token, refreshHistory]);
+  }, [token, refreshHistory, hydrate]);
 
   const open = useCallback(async (sid: string) => {
     if (!token) return;
     controller.current?.abort(); selected.current = sid;
-    setPending(true); setSession(null); setError(''); setTools([]); setTodos([]); setRefresh(null); setDraft('');
+    setPending(true); setSession(null); setError(''); setActivities({}); setRefresh(null); setReconnecting(false);
     try {
       const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`);
       if (selected.current !== sid) return;
-      setSession(detail);
+      hydrate(detail);
       const active = detail.runs.find(run => isActive(run.status));
-      if (active) void connect(sid, active.id);
+      if (active) void connect(sid, active.id, active.activity?.cursor);
     } catch (e) {
       if (selected.current === sid) {
         selected.current = null;
         setError(e instanceof Error ? e.message : 'Unable to open conversation');
       }
     } finally { setPending(false); }
-  }, [token, connect]);
+  }, [token, connect, hydrate]);
 
   const send = useCallback(async (message: string, repos: string[], language: string, provider: string, model: string) => {
     if (!token || pending) return false;
@@ -123,7 +123,7 @@ export function useAgentConversation(token: string | null) {
       const run = await agentRequest<AgentRun>(token, `/sessions/${sid}/runs`, { message, request_id: agentRequestId(), provider, model });
       const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`);
       if (selected.current !== sid) return true;
-      setSession(detail); void connect(sid, run.id); void refreshHistory().catch(() => {});
+      hydrate(detail); void connect(sid, run.id, detail.runs.find(item => item.id === run.id)?.activity?.cursor); void refreshHistory().catch(() => {});
       return true;
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Unable to send message');
@@ -131,14 +131,14 @@ export function useAgentConversation(token: string | null) {
       if (sid) {
         const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`).catch(() => null);
         if (detail && selected.current === sid) {
-          setSession(detail);
+          hydrate(detail);
           const active = detail.runs.find(run => isActive(run.status));
-          if (active) { void connect(sid, active.id); return true; }
+          if (active) { void connect(sid, active.id, active.activity?.cursor); return true; }
         }
       }
       return false;
     } finally { setPending(false); }
-  }, [token, pending, connect, refreshHistory]);
+  }, [token, pending, connect, refreshHistory, hydrate]);
 
   const control = useCallback(async (rid: string, action: 'cancel' | 'resume', model: { provider?: string; model?: string } = {}) => {
     if (!token || !selected.current) return;
@@ -153,6 +153,6 @@ export function useAgentConversation(token: string | null) {
     const link = window.document.createElement('a'); link.href = url; link.download = document.name; link.click(); URL.revokeObjectURL(url);
   }, []);
 
-  return { sessions, session, error, pending, tools, todos, reconnecting, refresh, draft, nextOffset,
+  return { sessions, session, error, pending, activities, reconnecting, refresh, nextOffset,
     reset, open, send, control, download, refreshHistory };
 }

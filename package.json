@@ -6,7 +6,8 @@
     "dev": "next dev --turbopack --port 3000",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:agent-ui": "node --test tests/frontend/agentActivity.test.cjs"
   },
   "dependencies": {
     "mermaid": "^11.4.1",

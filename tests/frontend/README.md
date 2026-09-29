@@ -1,0 +1,23 @@
+# Ask activity UI checks
+
+Run the timeline reducer regressions with `npm run test:agent-ui`. They use Node's
+test runner and the existing TypeScript dependency.
+
+For a browser smoke test, make `playwright` available in your Node environment
+and start an isolated frontend:
+
+```sh
+SERVER_BASE_URL=http://127.0.0.1:18081 npm run dev -- --port 3107
+node tests/frontend/ask-timeline.browser.cjs
+```
+
+Set `PLAYWRIGHT_CHANNEL=chrome` to use an installed Chrome instead of Playwright's
+bundled Chromium. The test starts its own fixture backend on `127.0.0.1:18081`,
+closes it afterward, and prints the temporary screenshot directory. Stop the
+test frontend before running a production build (both use `.next`).
+
+The browser test covers incremental SSE through the Next.js proxy, progress
+retention, plans, tool errors, auto-scroll/pause, reconnect deduplication,
+completed-session replay, and mobile overflow. It uses a dummy local identity
+and synthetic events; it neither calls a model nor validates analysis of real
+business repositories.

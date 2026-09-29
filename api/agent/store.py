@@ -230,6 +230,28 @@ class Store:
                 )
             ]
 
+    def activity(self, rid: str) -> dict:
+        """Replay all rounds, compacting token snapshots, not completed messages.
+
+        Keep each message's first position and newest body; cursor still covers
+        every persisted event so attaching SSE cannot duplicate the replay.
+        """
+        cursor, legacy_round = 0, 0
+        events, drafts = [], {}
+        while batch := self.events(rid, cursor):
+            for event in batch:
+                cursor = event["id"]
+                if event["type"] == "draft":
+                    key = event["data"].get("id") or f"legacy-{legacy_round}"
+                    if key in drafts:
+                        events[drafts[key]]["data"] = event["data"]
+                        continue
+                    drafts[key] = len(events)
+                elif event["type"] in {"tool_start", "status"}:
+                    legacy_round += 1
+                events.append(event)
+        return {"events": events, "cursor": cursor}
+
     def save_document(self, sid: str, name: str, content: str):
         with self.connect() as db:
             db.execute(

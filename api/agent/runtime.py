@@ -27,6 +27,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphRecursionError
 
 from .access import Access
+from .activity import public_input, tool_result
 from .dsml import recover_dsml, stream_text
 from .models import build_model
 from .prompts import SYSTEM_PROMPT
@@ -271,19 +272,27 @@ class Runtime:
                             draft = stream_text(visible_text(answer))
                             if time.monotonic() - last_emit > 0.15 and draft:
                                 self.store.event(
-                                    rid, "draft", {"content": draft}
+                                    rid, "draft", {"id": current_model_run, "content": draft}
                                 )
                                 last_emit = time.monotonic()
+                        elif kind == "on_chat_model_end" and event["run_id"] == current_model_run:
+                            # Flush the tail even when the last tokens arrived inside
+                            # the throttle window (or the provider did not stream).
+                            output = event["data"].get("output")
+                            if output is not None:
+                                answer = text_content(output.content)
+                            self.store.event(rid, "draft", {
+                                "id": current_model_run,
+                                "content": stream_text(visible_text(answer)),
+                                "done": True,
+                            })
                         elif kind == "on_tool_start":
                             self.store.event(
-                                rid, "tool_start", {"id": event["run_id"], "name": name}
+                                rid, "tool_start", {
+                                    "id": event["run_id"], "name": name,
+                                    "input": public_input(event["data"].get("input", {})),
+                                }
                             )
-                            if name == "write_todos":
-                                value = event["data"].get("input", {})
-                                if isinstance(value, dict):
-                                    self.store.event(
-                                        rid, "plan", {"todos": value.get("todos", [])}
-                                    )
                         elif kind == "on_tool_end":
                             output = event["data"].get("output")
                             self.store.event(
@@ -292,9 +301,13 @@ class Runtime:
                                 {
                                     "id": event["run_id"],
                                     "name": name,
-                                    "error": getattr(output, "status", None) == "error",
+                                    **tool_result(output),
                                 },
                             )
+                            if name == "write_todos" and not tool_result(output)["error"]:
+                                value = event["data"].get("input", {})
+                                if isinstance(value, dict):
+                                    self.store.event(rid, "plan", {"todos": value.get("todos", [])})
             snapshot = await graph.aget_state(config)
             last = next(
                 (
@@ -311,7 +324,7 @@ class Runtime:
                 raise RuntimeError("Model returned an empty final answer.")
             if recover_dsml(answer) != (answer, []):
                 raise UnrecoveredDsmlError
-            self.store.event(rid, "text", {"content": answer})
+            self.store.event(rid, "text", {"id": current_model_run, "content": answer})
             self.store.set_status(rid, "completed", answer=answer)
         except asyncio.CancelledError as exc:
             status = (
@@ -358,6 +371,15 @@ class Runtime:
                 error=f"Analysis failed ({type(exc).__name__}). Check model tool-calling support, provider availability and repository access, then resume.",
             )
         finally:
+            # Cancellation/errors can happen inside the stream throttle window.
+            # Persist its tail under the same message ID, not as a second answer.
+            persisted = self.store.get_run(rid)
+            if current_model_run and persisted and persisted["status"] != "completed":
+                self.store.event(rid, "draft", {
+                    "id": current_model_run,
+                    "content": stream_text(visible_text(answer)),
+                    "done": True,
+                })
             self.tasks.pop(rid, None)
 
     def create_graph(self, run, session, repos, user, model):

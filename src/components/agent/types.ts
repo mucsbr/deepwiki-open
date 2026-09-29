@@ -16,6 +16,7 @@ export interface AgentRun {
   id: string; session_id: string; message: string; provider: string; model: string;
   status: RunStatus; answer: string; error?: string | null;
   repos?: { project: string; url: string; commit: string }[] | null;
+  activity?: { events: AgentEvent[]; cursor: number };
 }
 export interface AgentDocument { name: string; content: string; updated_at: string }
 export interface AgentSession {
@@ -26,9 +27,17 @@ export interface SessionDetail extends AgentSession { runs: AgentRun[]; document
 export interface AgentEvent {
   id: number; type: string;
   data: { content?: string; status?: RunStatus; error?: string | boolean | null;
-    id?: string; name?: string; repo?: string; phase?: string;
+    id?: string; name?: string; repo?: string; phase?: string; done?: boolean;
+    input?: unknown; result?: Record<string, number>;
     repos?: { project: string; url: string; commit: string }[];
     todos?: { content: string; status: string }[] };
 }
-export interface ToolProgress { id: string; name: string; done: boolean; error: boolean }
+export interface Todo { content: string; status: string }
+export type ActivityItem =
+  | { kind: 'message'; id: string; content: string; done: boolean; final: boolean }
+  | { kind: 'tool'; id: string; name: string; input?: unknown; result?: Record<string, number>; done: boolean; error: boolean; interrupted?: boolean }
+  | { kind: 'plan'; id: string; todos: Todo[] }
+  | { kind: 'refresh'; id: string; repo: string; phase: string }
+  | { kind: 'status'; id: string; status: RunStatus };
+export interface RunActivity { items: ActivityItem[]; cursor: number; legacyMessageId?: string }
 export function isActive(status?: RunStatus): boolean { return status === 'queued' || status === 'running'; }

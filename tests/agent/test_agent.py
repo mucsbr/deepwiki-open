@@ -547,7 +547,13 @@ def test_real_deepagents_tool_loop_checkpoint_and_followup(repository):
                                 "args": {"repo": "group/demo", "path": "order.py"},
                                 "id": "read-1",
                                 "type": "tool_call",
-                            }
+                            },
+                            {
+                                "name": "write_todos",
+                                "args": {"todos": [{"content": "Locate submit", "status": "in_progress"}]},
+                                "id": "plan-1",
+                                "type": "tool_call",
+                            },
                         ],
                     ),
                     AIMessage(content="submit is implemented in order.py, lines 1–3."),
@@ -561,6 +567,9 @@ def test_real_deepagents_tool_loop_checkpoint_and_followup(repository):
                 e["type"] == "tool_start" and e["data"]["name"] == "read_source"
                 for e in events
             )
+            assert next(e for e in events if e["type"] == "plan")["data"]["todos"] == [
+                {"content": "Locate submit", "status": "in_progress"}
+            ]
             second = rt.store.create_run(
                 session["id"], str(uuid4()), "Save this as a document", "test", "test"
             )
@@ -824,6 +833,8 @@ def test_api_ownership_revocation_and_replay(repository):
     assert client.get(f"/api/agent/sessions/{session['id']}").status_code == 404
     assert client.get(f"/api/agent/runs/{run['id']}/events").status_code == 404
     app.dependency_overrides[current_user] = lambda: {"gitlab_user_id": 1}
+    history = client.get(f"/api/agent/sessions/{session['id']}").json()
+    assert history["runs"][0]["activity"] == rt.store.activity(run["id"])
     response = client.get(f"/api/agent/runs/{run['id']}/events?after={seq}")
     assert response.status_code == 200
     assert '"first"' not in response.text and '"second"' in response.text
@@ -1315,7 +1326,8 @@ def test_dsml_does_not_duplicate_native_tool_calls(repository):
     asyncio.run(check())
 
 
-def test_internal_summarization_is_not_streamed_as_answer(repository):
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_internal_summarization_is_not_streamed_as_answer(repository, interrupted):
     from types import SimpleNamespace
 
     async def check():
@@ -1342,8 +1354,16 @@ def test_internal_summarization_is_not_streamed_as_answer(repository):
                 async def astream_events(self, _payload, **_kwargs):
                     yield {"event": "on_chat_model_start", "run_id": "summary", "metadata": {"lc_source": "summarization"}}
                     yield {"event": "on_chat_model_stream", "run_id": "summary", "metadata": {"lc_source": "summarization"}, "data": {"chunk": AIMessage(content="HIDDEN_INTERNAL_SUMMARY")}}
+                    yield {"event": "on_chat_model_start", "run_id": "progress", "metadata": {}}
+                    yield {"event": "on_chat_model_stream", "run_id": "progress", "metadata": {}, "data": {"chunk": AIMessage(content="Checking")}}
+                    yield {"event": "on_chat_model_end", "run_id": "progress", "metadata": {}, "data": {"output": AIMessage(content="Checking the source entry.")}}
+                    yield {"event": "on_tool_start", "run_id": "read", "name": "read_source", "data": {"input": {"repo": "group/demo", "path": "order.py"}}}
+                    yield {"event": "on_tool_end", "run_id": "read", "name": "read_source", "data": {"output": ToolMessage(content='{"content":"code"}', tool_call_id="read")}}
                     yield {"event": "on_chat_model_start", "run_id": "answer", "metadata": {}}
                     yield {"event": "on_chat_model_stream", "run_id": "answer", "metadata": {}, "data": {"chunk": AIMessage(content="Visible answer")}}
+                    if interrupted:
+                        yield {"event": "on_chat_model_stream", "run_id": "answer", "metadata": {}, "data": {"chunk": AIMessage(content=" tail")}}
+                        raise TimeoutError
 
             rt.create_graph = lambda *_args: EventsGraph()
             rt.launch(
@@ -1352,9 +1372,19 @@ def test_internal_summarization_is_not_streamed_as_answer(repository):
             )
             await rt.tasks[run["id"]]
             events = rt.store.events(run["id"])
-            assert rt.store.get_run(run["id"])["answer"] == "Visible answer"
+            result = rt.store.get_run(run["id"])
+            assert result["answer"] == ("Visible answer tail" if interrupted else "Visible answer")
+            assert result["status"] == ("interrupted" if interrupted else "completed")
             assert any(event["type"] == "draft" and event["data"]["content"] == "Visible answer" for event in events)
             assert not any("HIDDEN_INTERNAL_SUMMARY" in str(event["data"]) for event in events)
+            progress = [event for event in events if event["type"] == "draft" and event["data"]["id"] == "progress"]
+            assert progress[-1]["data"] == {"id": "progress", "content": "Checking the source entry.", "done": True}
+            assert next(e for e in events if e["type"] == "tool_start")["data"]["input"]["path"] == "order.py"
+            assert next(e for e in events if e["type"] == "tool_end")["data"]["result"] == {"lines": 1}
+            if interrupted:
+                assert events[-1]["data"] == {"id": "answer", "content": "Visible answer tail", "done": True}
+            else:
+                assert next(e for e in events if e["type"] == "text")["data"]["id"] == "answer"
         finally:
             await rt.close()
 
