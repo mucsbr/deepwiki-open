@@ -13,6 +13,7 @@ import RepositoryScopePicker from '@/components/RepositoryScopePicker';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
 import { useLanguage } from '@/contexts/LanguageContext';
 import type RepoInfo from '@/types/repoinfo';
+import { isSearchableIndex, type IndexReport } from '@/types/indexStatus';
 
 interface IndexedProject {
   id: number | null;
@@ -24,6 +25,7 @@ interface IndexedProject {
   avatar_url: string;
   indexed_at: string;
   index_status: string;
+  index_report?: IndexReport;
 }
 
 export default function GlobalAskPage() {
@@ -45,7 +47,7 @@ export default function GlobalAskPage() {
         setProjects(data);
         // Default: select all indexed repos
         const allPaths = data
-          .filter((p: IndexedProject) => p.index_status === 'indexed')
+          .filter((p: IndexedProject) => isSearchableIndex(p.index_status))
           .map((p: IndexedProject) => p.path_with_namespace);
         setSelectedRepos(new Set(allPaths));
       }
@@ -88,7 +90,7 @@ export default function GlobalAskPage() {
     );
   }
 
-  const indexedProjects = projects.filter((p) => p.index_status === 'indexed');
+  const indexedProjects = projects.filter((p) => isSearchableIndex(p.index_status));
 
   return (
     <div className="min-h-screen bg-[var(--background)] p-4 md:p-8">

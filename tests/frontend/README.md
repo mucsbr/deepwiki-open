@@ -21,3 +21,16 @@ retention, plans, tool errors, auto-scroll/pause, reconnect deduplication,
 completed-session replay, and mobile overflow. It uses a dummy local identity
 and synthetic events; it neither calls a model nor validates analysis of real
 business repositories.
+
+It also checks that partial indexes can be selected in Ask, that admin failure
+details are visible, and that retry completion refreshes the coverage without a
+page reload. If a local development bundler cannot load fonts, run the same check
+against a production build instead:
+
+```sh
+SERVER_BASE_URL=http://127.0.0.1:18081 npm run build
+npm exec next -- start --port 3107
+```
+
+The backend address is a build-time rewrite; rebuild without that override after
+QA before using the local production bundle against your normal backend.

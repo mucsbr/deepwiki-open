@@ -5,6 +5,31 @@ from pathlib import Path
 
 import numpy as np
 
+def valid_vector(vector, dimensions=None) -> bool:
+    try:
+        value = np.asarray(vector, dtype=np.float32)
+        return bool(value.ndim == 1 and value.size and np.isfinite(value).all()
+                    and np.any(value) and (dimensions is None or len(value) == dimensions))
+    except (TypeError, ValueError):
+        return False
+
+
+def index_coverage(database, expected=None) -> dict:
+    expected = expected or embedding_spec()
+    docs = database.get_transformed_data(key="split_and_embed") or []
+    dimensions = expected.get("dimensions") or getattr(database, "index_vector_dimensions", None)
+    if dimensions is None:
+        dimensions = next((len(d.vector) for d in docs if valid_vector(d.vector)), None)
+    valid = sum(valid_vector(getattr(d, "vector", None), dimensions) for d in docs)
+    failures = getattr(database, "index_failures", [])
+    return {
+        "total_chunks": len(docs), "indexed_chunks": valid, "failed_chunks": len(docs) - valid,
+        "status": "indexed" if docs and valid == len(docs) else "partial" if valid else "error",
+        "failures": failures[:100], "failures_truncated": len(failures) > 100,
+        "sanitized_data_uris": getattr(database, "sanitized_data_uris", 0),
+        "reused_chunks": getattr(database, "reused_chunks", 0),
+    }
+
 
 def embedding_spec(embedder_type: str | None = None) -> dict:
     from api.config import configs, get_embedder_config
@@ -98,7 +123,7 @@ def vectors_problem(documents, expected_dimensions=None) -> str | None:
 
 
 def database_problem(
-    database, expected: dict, revision: str | None = None
+    database, expected: dict, revision: str | None = None, *, allow_partial: bool = False
 ) -> str | None:
     mismatch = embedding_mismatch(database, expected)
     if mismatch:
@@ -107,6 +132,8 @@ def database_problem(
         return (
             "Indexed source revision is missing or different from the current source."
         )
+    if allow_partial and index_coverage(database, expected)["indexed_chunks"]:
+        return None
     return vectors_problem(
         database.get_transformed_data(key="split_and_embed"), expected.get("dimensions")
     )

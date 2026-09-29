@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
@@ -7,6 +8,21 @@ from logging.handlers import RotatingFileHandler
 class IgnoreLogChangeDetectedFilter(logging.Filter):
     def filter(self, record: logging.LogRecord):
         return "Detected file change in" not in record.getMessage()
+
+
+class ProviderPayloadFilter(logging.Filter):
+    """SDK restoration/retry logs can contain entire source files or credentials."""
+
+    def filter(self, record):
+        if record.name.startswith("adalflow.core.component"):
+            return False
+        if record.name.startswith(("adalflow", "openai", "httpcore")) or record.name == "backoff":
+            if record.levelno < logging.WARNING:
+                return False
+            match = re.search(r"Error code:\s*(\d{3})", record.getMessage())
+            record.msg = "Provider/library warning (payload omitted)" + (f"; HTTP {match[1]}" if match else "")
+            record.args, record.exc_info, record.exc_text = (), None, None
+        return True
 
 
 def setup_logging(format: str = None):
@@ -72,6 +88,8 @@ def setup_logging(format: str = None):
     # Add filter to suppress "Detected file change" messages
     file_handler.addFilter(IgnoreLogChangeDetectedFilter())
     console_handler.addFilter(IgnoreLogChangeDetectedFilter())
+    file_handler.addFilter(ProviderPayloadFilter())
+    console_handler.addFilter(ProviderPayloadFilter())
 
     # Apply logging configuration
     logging.basicConfig(level=log_level, handlers=[file_handler, console_handler], force=True)

@@ -296,6 +296,8 @@ class IndexSearch:
             embedding_mismatch,
             embedding_spec,
             stored_embedding_specs,
+            index_coverage,
+            valid_vector,
         )
         from api.tools.embedder import get_embedder
 
@@ -336,13 +338,17 @@ class IndexSearch:
                     })
                     continue
                 loaded = db.get_transformed_data(key="split_and_embed") or []
+                report = index_coverage(db, expected)
+                dimensions = expected.get("dimensions") or getattr(db, "index_vector_dimensions", None)
+                if dimensions is None:
+                    dimensions = next((len(d.vector) for d in loaded if valid_vector(d.vector)), None)
                 usable, missing = 0, 0
                 for doc in loaded:
                     meta = doc.meta_data or {}
                     if meta.get("file_path") not in self.reader.tree(name):
                         continue
                     vector = getattr(doc, "vector", None)
-                    if vector is None or len(vector) == 0:
+                    if not valid_vector(vector, dimensions):
                         missing += 1
                         continue
                     origins[id(doc)] = name
@@ -353,6 +359,11 @@ class IndexSearch:
                     "index_available": True,
                     "indexed_chunks": usable,
                     "missing_vectors": missing,
+                    "total_chunks": report["total_chunks"],
+                    "failed_chunks": report["failed_chunks"],
+                    "status": report["status"],
+                    "failures": report["failures"],
+                    "failures_truncated": report["failures_truncated"],
                 })
             if not docs:
                 return {
@@ -425,5 +436,5 @@ class IndexSearch:
             ],
             "search_mode": "semantic_code",
             "index_coverage": coverage,
-            "notice": "Code index results are candidates, possibly from a different revision. Confirm with read_source.",
+            "notice": "Code index results are candidates. Confirm with read_source. Check index_coverage: partial indexes omit failed chunks; empty results do not establish absence. Use exact source search for coverage gaps.",
         }

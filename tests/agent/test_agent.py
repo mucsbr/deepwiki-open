@@ -706,6 +706,7 @@ def test_existing_index_is_filtered_and_never_rebuilt(repository, monkeypatch):
     from api.agent.repositories import IndexSearch
     from api.index_state import embedding_spec
 
+    monkeypatch.setattr("api.config.get_embedder_config", lambda: {"model_kwargs": {"model": "test-embedding", "dimensions": 2}})
     root, repo = repository
     (root / "databases").mkdir()
     docs = [
@@ -744,6 +745,7 @@ def test_semantic_search_reports_embedding_channel_failure_and_partial_coverage(
     from api.agent.repositories import IndexSearch
     from api.index_state import embedding_spec
 
+    monkeypatch.setattr("api.config.get_embedder_config", lambda: {"model_kwargs": {"model": "test-embedding", "dimensions": 2}})
     root, repo = repository
     (root / "databases").mkdir()
     db = LocalDB(transformed_items={"split_and_embed": [
@@ -772,6 +774,7 @@ def test_semantic_search_reports_embedding_channel_failure_and_partial_coverage(
     result = IndexSearch(SourceReader([repo]), root).search("submit")
     assert result["index_coverage"] == [{
         "repo": repo.project, "index_available": True, "indexed_chunks": 1, "missing_vectors": 1,
+        "total_chunks": 2, "failed_chunks": 1, "status": "partial", "failures": [], "failures_truncated": False,
     }]
     assert len(result["matches"]) == 1
 

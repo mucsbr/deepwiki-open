@@ -83,6 +83,8 @@ def set_project_metadata(
     last_activity_at: str,
     repo_path: str,
     status: str = "indexed",
+    index_report: dict | None = None,
+    last_error: str | None = None,
 ) -> None:
     """Create or update metadata for a project."""
     with _write_lock():
@@ -94,11 +96,16 @@ def set_project_metadata(
             **previous,
             "project_id": project_id,
             "last_activity_at": last_activity_at,
-            "indexed_at": stamp if status == "indexed" else previous.get("indexed_at", ""),
+            "indexed_at": stamp if status in {"indexed", "partial"} else previous.get("indexed_at", ""),
             "repo_path": repo_path,
             "status": status,
             "last_attempt_at": stamp,
+            "last_error": last_error,
         }
+        if index_report is not None:
+            projects[project_path]["index_report"] = index_report
+        elif status == "error":
+            projects[project_path].pop("index_report", None)
         _save(data)
 
 
@@ -115,14 +122,14 @@ def get_indexed_project_paths() -> List[str]:
     return [
         path
         for path, meta in _load().get("projects", {}).items()
-        if meta.get("status") == "indexed"
+        if meta.get("status") in {"indexed", "partial"}
     ]
 
 
 def is_project_indexed(project_path: str) -> bool:
     """Check if a project has been indexed."""
     meta = get_project_metadata(project_path)
-    return meta is not None and meta.get("status") == "indexed"
+    return meta is not None and meta.get("status") in {"indexed", "partial"}
 
 
 def needs_reindex(project_path: str, last_activity_at: str) -> bool:

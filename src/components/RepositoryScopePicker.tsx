@@ -3,11 +3,14 @@
 import { useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
 import { FaChevronDown, FaChevronRight, FaFolder, FaSearch } from 'react-icons/fa';
 import { useLanguage } from '@/contexts/LanguageContext';
+import type { IndexReport } from '@/types/indexStatus';
 
 export interface ScopeProject {
   name: string;
   path_with_namespace: string;
   description: string | null;
+  index_status?: string;
+  index_report?: IndexReport;
 }
 
 interface ScopeGroup {
@@ -91,6 +94,9 @@ export default function RepositoryScopePicker({ projects, selectedRepos, setSele
       onChange={() => setPaths([project.path_with_namespace])}
       aria-label={project.path_with_namespace} className="h-4 w-4 shrink-0 accent-[var(--accent-primary)]" />
     <span className="min-w-0 truncate text-[var(--foreground)]">{project.path_with_namespace.split('/').pop()}</span>
+    {project.index_status === 'partial' && <span className="shrink-0 text-xs text-amber-700 dark:text-amber-400">
+      {t('partialIndex', 'Partial index')}{project.index_report && ` · ${project.index_report.indexed_chunks}/${project.index_report.total_chunks}`}
+    </span>}
   </label>;
 
   const renderGroup = (group: ScopeGroup, depth = 0): ReactNode => {

@@ -102,7 +102,7 @@ class BatchIndexer:
         candidates = [
             (name, item)
             for name, item in metadata.items()
-            if item.get("status") == "indexed"
+            if item.get("status") in {"indexed", "partial"}
             and name not in seen_paths
             and item.get("project_id")
         ]
@@ -210,7 +210,8 @@ class BatchIndexer:
             # documents. Do not advertise it as usable by Ask Agent.
             from adalflow.utils import get_adalflow_default_root_path
             from api.agent.repositories import resolve_repository
-            from api.index_state import index_problem
+            from api.index_state import database_problem, embedding_spec, index_coverage
+            from adalflow.core.db import LocalDB
 
             repo = await asyncio.to_thread(
                 resolve_repository,
@@ -221,9 +222,11 @@ class BatchIndexer:
             if not documents:
                 raise ValueError("No usable embeddings were produced for this repository.")
             index_file = Path(get_adalflow_default_root_path()) / "databases" / f"{repo.root.name}.pkl"
-            problem = await asyncio.to_thread(index_problem, index_file, repo.commit)
+            database = await asyncio.to_thread(LocalDB.load_state, str(index_file))
+            problem = database_problem(database, embedding_spec(), repo.commit, allow_partial=True)
             if problem:
                 raise ValueError(f"Repository index validation failed: {problem}")
+            report = index_coverage(database)
 
             repo_path = quote(path_with_ns, safe="")
             set_project_metadata(
@@ -231,13 +234,15 @@ class BatchIndexer:
                 project_id=project_id,
                 last_activity_at=last_activity,
                 repo_path=repo_path,
-                status="indexed",
+                status=report["status"],
+                index_report=report,
+                last_error=f"{report['failed_chunks']}/{report['total_chunks']} chunks failed; successful chunks remain searchable." if report["failed_chunks"] else None,
             )
 
-            logger.info("Successfully reindexed: %s", path_with_ns)
+            logger.info("Reindexed %s: %s (%d/%d chunks)", path_with_ns, report["status"], report["indexed_chunks"], report["total_chunks"])
             return True
         except Exception as exc:
-            logger.error("Failed to reindex %s: %s", path_with_ns, exc)
+            logger.error("Failed to reindex %s (%s)", path_with_ns, type(exc).__name__)
 
             from api.metadata_store import set_project_metadata as set_meta
             set_meta(
@@ -246,6 +251,8 @@ class BatchIndexer:
                 last_activity_at=last_activity,
                 repo_path=quote(path_with_ns, safe=""),
                 status="error",
+                index_report=getattr(exc, "report", None),
+                last_error=str(exc) if hasattr(exc, "report") else f"Indexing failed ({type(exc).__name__}); check repository access and provider availability.",
             )
             return False
 
@@ -393,6 +400,7 @@ class BatchIndexer:
         """
         total = 0
         indexed = 0
+        partial = 0
         skipped = 0
         errors = 0
 
@@ -483,13 +491,18 @@ class BatchIndexer:
                 success = await self.index_project(project, on_progress=_wiki_progress, force=force)
 
             if success:
-                indexed += 1
+                from api.metadata_store import get_project_metadata
+                if (get_project_metadata(path) or {}).get("status") == "partial":
+                    partial += 1
+                else:
+                    indexed += 1
             else:
                 errors += 1
 
         summary = {
             "total_projects": total,
             "indexed": indexed,
+            "partial": partial,
             "skipped": skipped,
             "errors": errors,
         }
@@ -511,6 +524,7 @@ class BatchIndexer:
         """
         total = 0
         indexed = 0
+        partial = 0
         skipped = 0
         errors = 0
 
@@ -570,13 +584,18 @@ class BatchIndexer:
 
             success = await self.index_project(project, on_progress=_wiki_progress)
             if success:
-                indexed += 1
+                from api.metadata_store import get_project_metadata
+                if (get_project_metadata(path) or {}).get("status") == "partial":
+                    partial += 1
+                else:
+                    indexed += 1
             else:
                 errors += 1
 
         summary = {
             "total_projects": total,
             "indexed": indexed,
+            "partial": partial,
             "skipped": skipped,
             "errors": errors,
             "unavailable": unavailable,

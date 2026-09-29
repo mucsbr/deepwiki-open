@@ -594,7 +594,7 @@ async def list_accessible_projects(current_user: dict = Depends(get_current_user
     # Intersect: only return indexed projects the user can access
     result = []
     for path, meta in indexed_projects.items():
-        if meta.get("status") != "indexed":
+        if meta.get("status") not in {"indexed", "partial"}:
             continue
         if path not in accessible_paths:
             continue
@@ -609,6 +609,7 @@ async def list_accessible_projects(current_user: dict = Depends(get_current_user
             "avatar_url": gl_proj.get("avatar_url", "") or "",
             "indexed_at": meta.get("indexed_at", ""),
             "index_status": meta.get("status", "unknown"),
+            "index_report": meta.get("index_report"),
         })
 
     return result

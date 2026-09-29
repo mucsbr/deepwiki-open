@@ -10,6 +10,7 @@ import base64
 import glob
 import pickle
 import tempfile
+import fcntl
 from adalflow.utils import get_adalflow_default_root_path
 from adalflow.core.db import LocalDB
 from api.config import configs, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
@@ -526,6 +527,7 @@ def prepare_data_pipeline(embedder_type: str = None, is_ollama_embedder: bool = 
 def transform_documents_and_save_to_db(
     documents: List[Document], db_path: str, embedder_type: str = None, is_ollama_embedder: bool = None,
     source_revision: str = None, source_directory: str = None,
+    previous=None, force_reindex: bool = False,
 ) -> LocalDB:
     """
     Transforms a list of documents and saves them to a local database.
@@ -539,29 +541,22 @@ def transform_documents_and_save_to_db(
                                            If None, will be determined from configuration.
     """
     from api.index_state import database_problem, embedding_spec
+    from api.index_builder import build_index
     from api.index_state import source_revision as current_revision
 
     if embedder_type is None and is_ollama_embedder is not None:
         embedder_type = 'ollama' if is_ollama_embedder else None
 
-    # Get the data transformer
-    data_transformer = prepare_data_pipeline(embedder_type, is_ollama_embedder)
-
-    # Save the documents to a local database
-    db = LocalDB()
-    db.index_embedding_spec = embedding_spec(embedder_type)
-    db.source_revision = source_revision
-    db.register_transformer(transformer=data_transformer, key="split_and_embed")
-    db.load(documents)
-    db.transform(key="split_and_embed")
-    problem = database_problem(db, db.index_embedding_spec)
+    db = build_index(documents, embedding_spec(embedder_type), source_revision,
+                     embedder_type, previous=previous, force=force_reindex)
+    problem = database_problem(db, db.index_embedding_spec, allow_partial=True)
     if problem:
         raise ValueError(f"Embedding generation failed: {problem}")
     if source_revision and source_directory and current_revision(source_directory) != source_revision:
         raise ValueError("Source revision changed while generating embeddings; retry indexing.")
 
-    # Publish only a complete, validated cache. A failed build leaves the old
-    # index in place, including when force or a Git update triggered the rebuild.
+    # Publish complete OR explicitly partial caches atomically. A build with no
+    # usable vectors, or a source-revision race, leaves the old cache untouched.
     directory = os.path.dirname(db_path) or "."
     os.makedirs(directory, exist_ok=True)
     db.index_path = db_path
@@ -870,8 +865,8 @@ class DatabaseManager:
             pull (bool): If True, run git pull on existing repos to fetch latest
                          changes.  Default False — callers like chat/Ask skip the
                          pull to avoid unnecessary network access.
-            force_reindex (bool): Rebuild even a compatible cache; retain the old
-                                  cache until replacement embeddings are complete.
+            force_reindex (bool): Rebuild even a compatible cache; never replace
+                                  it with an unusable index or a source-revision race.
 
         Returns:
             List[Document]: List of Document objects
@@ -885,7 +880,8 @@ class DatabaseManager:
 
         return self.prepare_db_index(embedder_type=embedder_type, excluded_dirs=excluded_dirs, excluded_files=excluded_files,
                                    included_dirs=included_dirs, included_files=included_files,
-                                   force_reindex=force_reindex or bool(has_changes))
+                                   force_reindex=force_reindex or bool(has_changes),
+                                   retry_failed=pull or force_reindex or bool(has_changes))
 
     def reset_database(self):
         """
@@ -990,10 +986,16 @@ class DatabaseManager:
             logger.error(f"Failed to create repository structure: {e}")
             raise
 
-    def prepare_db_index(self, embedder_type: str = None, is_ollama_embedder: bool = None, 
+    def prepare_db_index(self, *args, **kwargs) -> List[Document]:
+        # Serialize writers per repository, including Ask refresh and admin jobs.
+        with open(self.repo_paths["save_db_file"] + ".lock", "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return self._prepare_db_index_unlocked(*args, **kwargs)
+
+    def _prepare_db_index_unlocked(self, embedder_type: str = None, is_ollama_embedder: bool = None,
                         excluded_dirs: List[str] = None, excluded_files: List[str] = None,
                         included_dirs: List[str] = None, included_files: List[str] = None,
-                        force_reindex: bool = False) -> List[Document]:
+                        force_reindex: bool = False, retry_failed: bool = True) -> List[Document]:
         """
         Prepare the indexed database for the repository.
 
@@ -1010,7 +1012,7 @@ class DatabaseManager:
         Returns:
             List[Document]: List of Document objects
         """
-        from api.index_state import database_problem, embedding_spec, source_revision
+        from api.index_state import database_problem, embedding_spec, source_revision, valid_vector
 
         # Handle backward compatibility
         if embedder_type is None and is_ollama_embedder is not None:
@@ -1028,16 +1030,20 @@ class DatabaseManager:
         )
 
         # check the database
-        if not force_reindex and self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
+        previous = None
+        if self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
             pkl_size = os.path.getsize(self.repo_paths["save_db_file"])
             logger.info("Loading existing database (size=%d bytes)...", pkl_size)
             try:
                 self.db = LocalDB.load_state(self.repo_paths["save_db_file"])
+                previous = self.db
                 documents = self.db.get_transformed_data(key="split_and_embed")
-                problem = database_problem(self.db, expected, revision)
-                if problem is None:
-                    logger.info("Reusing %d chunks from compatible code index", len(documents))
-                    return documents
+                problem = database_problem(self.db, expected, revision, allow_partial=not retry_failed)
+                if problem is None and not force_reindex:
+                    dimensions = expected.get("dimensions") or getattr(self.db, "index_vector_dimensions", None)
+                    usable = [doc for doc in documents if valid_vector(doc.vector, dimensions)]
+                    logger.info("Reusing %d/%d chunks from compatible code index", len(usable), len(documents))
+                    return usable
                 logger.info("Rebuilding incompatible/incomplete code index: %s", problem)
             except Exception as e:
                 logger.error(f"Error loading existing database: {e}")
@@ -1055,21 +1061,16 @@ class DatabaseManager:
             included_files=included_files
         )
         logger.info("[prepare_db_index] read_all_documents returned %d docs, now embedding...", len(documents))
-        # Log sample document texts to verify content is not empty
-        for i, doc in enumerate(documents[:3]):
-            text = getattr(doc, "text", "")
-            logger.info("[prepare_db_index] sample doc[%d] text_len=%d preview=%s",
-                        i, len(text) if text else 0, repr((text or "")[:100]))
-
         self.db = transform_documents_and_save_to_db(
             documents, self.repo_paths["save_db_file"], embedder_type=embedder_type,
             source_revision=revision, source_directory=self.repo_paths["save_repo_dir"],
+            previous=previous, force_reindex=force_reindex,
         )
         logger.info(f"Total documents: {len(documents)}")
         transformed_docs = self.db.get_transformed_data(key="split_and_embed")
         logger.info(f"Total transformed documents: {len(transformed_docs)}")
 
-        return transformed_docs
+        return [doc for doc in transformed_docs if valid_vector(doc.vector, expected.get("dimensions") or self.db.index_vector_dimensions)]
 
     def prepare_retriever(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None):
         """

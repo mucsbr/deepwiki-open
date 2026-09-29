@@ -25,6 +25,8 @@ import {
   FaBrain,
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
+import IndexCoverage from '@/components/IndexCoverage';
+import type { IndexReport } from '@/types/indexStatus';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,9 @@ interface Project {
   repo_path: string;
   has_wiki_cache: boolean;
   wiki_languages: string[];
+  index_report?: IndexReport;
+  last_error?: string | null;
+  last_attempt_at?: string;
 }
 
 interface BatchStatus {
@@ -236,9 +241,13 @@ export default function AdminPage() {
           const data: BatchStatus = await res.json();
           setBatchStatus(data);
           if (!data.running) {
-            // Refresh stats when done
-            const statsRes = await fetch('/api/admin/stats', { headers });
+            // Completion must refresh coverage/failure details, not just counters.
+            const [statsRes, projectsRes] = await Promise.all([
+              fetch('/api/admin/stats', { headers }),
+              fetch('/api/admin/projects', { headers }),
+            ]);
             if (statsRes.ok) setStats(await statsRes.json());
+            if (projectsRes.ok) setProjects(await projectsRes.json());
           }
         }
       } catch {
@@ -781,7 +790,13 @@ export default function AdminPage() {
                                   )}
                                 </div>
                               </td>
-                              <td className="py-2 pr-4"><StatusBadge status={p.status} /></td>
+                              <td className="py-2 pr-4"><StatusBadge status={p.status} />
+                                <IndexCoverage report={p.index_report} error={p.last_error || (p.status === 'error'
+                                  ? 'No stored details for this older attempt. Retry Reindex to capture the failure reason.' : null)} />
+                                {p.last_attempt_at && p.status !== 'indexed' && <p className="mt-1 text-xs text-[var(--muted)]">
+                                  Last attempt: {new Date(p.last_attempt_at).toLocaleString()}
+                                </p>}
+                              </td>
                               <td className="py-2 pr-4">
                                 {p.has_wiki_cache ? (
                                   <span className="px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">
@@ -807,7 +822,7 @@ export default function AdminPage() {
                                     onClick={() => triggerSingleOperation(p.path, 'reindex')}
                                     disabled={batchStatus?.running || operatingProject === p.path}
                                     className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded border border-blue-300 text-blue-600 hover:bg-blue-50 dark:border-blue-700 dark:text-blue-400 dark:hover:bg-blue-900/20 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                                    title="Reindex this project (git pull + re-embedding)"
+                                    title="Update code and index; reuse compatible successful chunks and retry failures"
                                   >
                                     <FaRedo className="text-[10px]" />
                                     Reindex
@@ -1259,7 +1274,8 @@ export default function AdminPage() {
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[var(--muted)]">
                   {Object.entries(batchStatus.last_result).map(([k, v]) => (
                     <div key={k}>
-                      <span className="font-medium">{k}:</span> {String(v)}
+                      <span className="font-medium">{k}:</span> {k === 'index_report' && v
+                        ? <IndexCoverage report={v as IndexReport} /> : String(v ?? '-')}
                     </div>
                   ))}
                 </div>
@@ -1334,6 +1350,7 @@ function StatCard({
 function StatusBadge({ status }: { status: string }) {
   const colors: Record<string, string> = {
     indexed: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
+    partial: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
     error: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
   };
   const cls = colors[status] || 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-400';

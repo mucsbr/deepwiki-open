@@ -3,7 +3,6 @@
 import asyncio
 from types import SimpleNamespace
 
-import adalflow as adal
 import pytest
 from adalflow.core.db import LocalDB
 from adalflow.core.types import Document
@@ -47,7 +46,7 @@ def migration(tmp_path, monkeypatch):
         "http_url_to_repo": repo.url + ".git",
     }
     metadata_store.set_project_metadata(repo.project, 1, "unchanged", repo.project)
-    state = {"embeddings": 0, "fail": None, "git_changed": False}
+    state = {"embeddings": 0, "inputs": [], "fail": None, "git_changed": False}
 
     def create_repo(manager, *_args, **_kwargs):
         manager.repo_paths = {
@@ -58,20 +57,15 @@ def migration(tmp_path, monkeypatch):
         state["git_changed"] = False
         return changed
 
-    def transform(db, **_kwargs):
+    def embed(input):
         state["embeddings"] += 1
+        state["inputs"].extend(input)
         if state["fail"] == "raise":
-            raise RuntimeError("fixture embedding provider unavailable")
-        db.transformed_items["split_and_embed"] = [
-            Document(
-                text=doc.text,
-                vector=[0.25] * config["model_kwargs"]["dimensions"],
-                meta_data=doc.meta_data,
-            )
-            for doc in db.items
-        ]
-        if state["fail"] == "partial":
-            db.transformed_items["split_and_embed"][-1].vector = []
+            raise RuntimeError("fixture provider unavailable secret-token")
+        return SimpleNamespace(error=None, data=[
+            SimpleNamespace(index=i, embedding=[] if state["fail"] == "partial" and text == "dispatch" else [0.25] * config["model_kwargs"]["dimensions"])
+            for i, text in enumerate(input)
+        ])
 
     monkeypatch.setattr(data_pipeline.DatabaseManager, "_create_repo", create_repo)
     monkeypatch.setattr(
@@ -82,12 +76,7 @@ def migration(tmp_path, monkeypatch):
             Document(text="dispatch", meta_data={"file_path": "order.py"}),
         ],
     )
-    monkeypatch.setattr(
-        data_pipeline,
-        "prepare_data_pipeline",
-        lambda *_args, **_kwargs: adal.Sequential(),
-    )
-    monkeypatch.setattr(LocalDB, "transform", transform)
+    monkeypatch.setattr("api.index_builder.get_embedder", lambda **_kwargs: embed)
     indexer = BatchIndexer("https://gitlab.example", "fixture-token", [])
 
     async def fetch(_pid):
@@ -134,21 +123,28 @@ def test_unchanged_git_with_new_embedding_config_rebuilds_then_skips(
     assert m.state["embeddings"] == 1
 
 
-def test_failed_forced_migration_keeps_old_index_and_retries(migration):
+def test_partial_migration_publishes_success_and_retries_only_failures(migration):
     from api.metadata_store import get_project_metadata
 
     m = migration
     old = m.path.read_bytes()
     m.config["model_kwargs"]["model"] = "Qwen/Qwen3-Embedding-4B"
     m.state["fail"] = "partial"
-    assert not asyncio.run(m.indexer.reindex_project(m.project, force=True))
-    assert m.path.read_bytes() == old
-    assert get_project_metadata(m.repo.project)["status"] == "error"
+    assert asyncio.run(m.indexer.reindex_project(m.project, force=True))
+    assert m.path.read_bytes() != old
+    meta = get_project_metadata(m.repo.project)
+    assert meta["status"] == "partial"
+    assert meta["index_report"]["indexed_chunks"] == 1
+    assert meta["index_report"]["failed_chunks"] == 1
+    assert meta["index_report"]["failures"][0]["path"] == "order.py"
     assert not list(m.path.parent.glob("*.tmp"))
+    m.state["inputs"] = []
     m.state["fail"] = None
     result = asyncio.run(m.indexer.run_selected(project_ids=[1], operation="reindex"))
     assert result["indexed"] == 1 and result["errors"] == 0
     assert get_project_metadata(m.repo.project)["status"] == "indexed"
+    assert get_project_metadata(m.repo.project)["last_error"] is None
+    assert m.state["inputs"] == ["dispatch"]
     assert m.path.read_bytes() != old
 
 
@@ -162,7 +158,7 @@ def test_failed_git_refresh_retries_even_after_git_is_already_updated(migration)
     run_git(m.repo.root, "commit", "-qm", "new source")
     revision = run_git(m.repo.root, "rev-parse", "HEAD")
     m.state.update(git_changed=True, fail="raise")
-    with pytest.raises(RuntimeError, match="provider unavailable"):
+    with pytest.raises(ValueError, match="No usable embeddings"):
         DatabaseManager().prepare_database(m.repo.url, "gitlab", pull=True)
     assert m.path.read_bytes() == old
     m.state["fail"] = None

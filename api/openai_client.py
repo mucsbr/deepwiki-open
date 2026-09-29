@@ -30,8 +30,6 @@ from openai import (
     APITimeoutError,
     InternalServerError,
     RateLimitError,
-    UnprocessableEntityError,
-    BadRequestError,
 )
 from openai.types import (
     Completion,
@@ -58,7 +56,7 @@ T = TypeVar("T")
 def get_first_message_content(completion: ChatCompletion) -> str:
     r"""When we only need the content of the first message.
     It is the default parser for chat completion."""
-    log.debug(f"raw completion: {completion}")
+    log.debug("Received completion")
     return completion.choices[0].message.content
 
 
@@ -92,7 +90,7 @@ def parse_stream_response(completion: ChatCompletionChunk) -> str:
 def handle_streaming_response(generator: Stream[ChatCompletionChunk]):
     r"""Handle the streaming response."""
     for completion in generator:
-        log.debug(f"Raw chunk completion: {completion}")
+        log.debug("Received completion chunk")
         parsed_content = parse_stream_response(completion)
         yield parsed_content
 
@@ -220,7 +218,7 @@ class OpenAIClient(ModelClient):
         completion: Union[ChatCompletion, Generator[ChatCompletionChunk, None, None]],
     ) -> "GeneratorOutput":
         """Parse the completion, and put it into the raw_response."""
-        log.debug(f"completion: {completion}, parser: {self.chat_completion_parser}")
+        log.debug("Parsing completion")
         try:
             data = self.chat_completion_parser(completion)
         except Exception as e:
@@ -264,7 +262,7 @@ class OpenAIClient(ModelClient):
         try:
             return parse_embedding_response(response)
         except Exception as e:
-            log.error(f"Error parsing the embedding response: {e}")
+            log.error("Error parsing the embedding response (%s)", type(e).__name__)
             return EmbedderOutput(data=[], error=str(e), raw_response=response)
 
     def convert_inputs_to_api_kwargs(
@@ -403,8 +401,6 @@ class OpenAIClient(ModelClient):
             APITimeoutError,
             InternalServerError,
             RateLimitError,
-            UnprocessableEntityError,
-            BadRequestError,
         ),
         max_time=5,
     )
@@ -412,8 +408,9 @@ class OpenAIClient(ModelClient):
         """
         kwargs is the combined input and model_kwargs.  Support streaming call.
         """
-        log.info(f"api_kwargs: {api_kwargs}")
-        self._api_kwargs = api_kwargs
+        inputs = api_kwargs.get("input", [])
+        log.info("Provider call: model=%s input_count=%s", api_kwargs.get("model"),
+                 len(inputs) if isinstance(inputs, list) else 1)
         if model_type == ModelType.EMBEDDER:
             return self.sync_client.embeddings.create(**api_kwargs)
         elif model_type == ModelType.LLM:
@@ -480,8 +477,6 @@ class OpenAIClient(ModelClient):
             APITimeoutError,
             InternalServerError,
             RateLimitError,
-            UnprocessableEntityError,
-            BadRequestError,
         ),
         max_time=5,
     )
@@ -491,8 +486,6 @@ class OpenAIClient(ModelClient):
         """
         kwargs is the combined input and model_kwargs
         """
-        # store the api kwargs in the client
-        self._api_kwargs = api_kwargs
         if self.async_client is None:
             self.async_client = self.init_async_client()
         if model_type == ModelType.EMBEDDER:

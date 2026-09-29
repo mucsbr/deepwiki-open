@@ -137,6 +137,7 @@
     "copyright": "DeepWiki - 为代码仓库提供AI驱动的文档"
   },
   "ask": {
+    "partialIndex": "部分已索引",
     "scopeTitle": "搜索范围",
     "scopeSearch": "搜索仓库或分组路径…",
     "scopeSelectAll": "全选",

@@ -69,7 +69,7 @@ class Access:
         not_indexed = [
             project
             for project in projects
-            if metadata.get(project, {}).get("status") != "indexed"
+            if metadata.get(project, {}).get("status") not in {"indexed", "partial"}
         ]
         if not_indexed:
             raise HTTPException(

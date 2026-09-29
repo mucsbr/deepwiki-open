@@ -16,6 +16,8 @@ async function main() {
   const run = { id: 'r1', session_id: 's1', message: '任务从页面提交后如何处理？（交互测试数据）', provider: 'test', model: 'fixture', status: 'running', answer: '', repos };
   const session = { id: 's1', title: run.message, repos, language: 'zh', updated_at: new Date().toISOString() };
   const events = [];
+  let report = { status: 'partial', total_chunks: 3, indexed_chunks: 2, failed_chunks: 1,
+    failures: [{ path: 'file-1.go', chunk_id: 'missing', chunk_index: 1, code: 'http_400', message: 'Embedding service returned HTTP 400.' }] };
   const streams = new Set();
   const cursors = [];
   const publish = (type, data) => {
@@ -34,9 +36,20 @@ async function main() {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const json = value => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(value)); };
-    if (url.pathname === '/auth/me') return json({ gitlab_user_id: 1, name: 'UI Test', username: 'test', is_admin: false });
+    if (url.pathname === '/auth/me') return json({ gitlab_user_id: 1, name: 'UI Test', username: 'test', is_admin: true });
     if (url.pathname === '/lang/config') return json({ supported_languages: { zh: '中文', en: 'English' }, default: 'zh' });
-    if (url.pathname === '/api/projects') return json([{ id: 1, name: 'tasks', path_with_namespace: 'example/tasks', index_status: 'indexed' }]);
+    if (url.pathname === '/api/projects') return json([{ id: 1, name: 'tasks', path_with_namespace: 'example/tasks', index_status: report.status, index_report: report }]);
+    if (url.pathname === '/api/admin/stats') return json({ total_indexed_projects: 1, status_counts: { [report.status]: 1 }, disk_usage: { repos_mb: 0, databases_mb: 0, wikicache_mb: 0 }, total_wiki_caches: 0 });
+    if (url.pathname === '/api/admin/projects') return json([{ path: 'example/tasks', project_id: 1, status: report.status, index_report: report,
+      last_error: report.failed_chunks ? '1/3 chunks failed; successful chunks remain searchable.' : null,
+      indexed_at: session.updated_at, last_activity_at: session.updated_at, wiki_languages: [], has_wiki_cache: false }]);
+    if (url.pathname === '/api/admin/config') return json({ gitlab_url: 'https://gitlab.example', embedder_type: 'openai', batch_groups: '', permission_cache_ttl: 30, admin_usernames: [] });
+    if (url.pathname === '/api/admin/products') return json([]);
+    if (url.pathname === '/api/admin/batch-index/status') return json({ running: false, progress: {}, last_result: {}, last_run: null });
+    if (url.pathname === '/api/admin/projects/example/tasks/reindex') {
+      report = { ...report, status: 'indexed', indexed_chunks: 3, failed_chunks: 0, failures: [] };
+      return json({ message: 'started' });
+    }
     if (url.pathname === '/api/agent/config') return json({ defaultProvider: 'test', defaultModel: 'fixture' });
     if (url.pathname === '/api/agent/sessions') return json({ sessions: [session], next_offset: null });
     if (url.pathname === '/api/agent/sessions/s1') return json({ ...session, runs: [{ ...run, activity: { events, cursor: events.length } }], documents: [] });
@@ -58,14 +71,30 @@ async function main() {
   try {
     browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || undefined });
     const page = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+    if (process.env.DEBUG_PAGE_ERRORS) {
+      const protocol = await page.context().newCDPSession(page);
+      await protocol.send('Runtime.enable');
+      await protocol.send('Debugger.enable');
+      protocol.on('Runtime.exceptionThrown', ({ exceptionDetails: detail }) => {
+        console.error('Browser exception location:', detail.url, detail.lineNumber, detail.columnNumber, detail.scriptId);
+        if (detail.scriptId) protocol.send('Debugger.getScriptSource', { scriptId: detail.scriptId }).then(value => {
+          console.error('Source near exception:', value.scriptSource.split('\n')[detail.lineNumber]?.slice(0, 180));
+        }).catch(() => {});
+      });
+    }
     const errors = [];
-    page.on('pageerror', error => errors.push(error.message));
+    page.on('pageerror', error => errors.push(error.stack || error.message));
     await page.addInitScript(() => { localStorage.setItem('deepwiki_jwt', 'ui-test-only'); localStorage.setItem('language', 'zh'); });
     await page.goto('http://127.0.0.1:3107/ask');
+    await page.getByPlaceholder('搜索仓库或分组路径…').fill('example/tasks');
+    await page.getByText('部分已索引 · 2/3', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('checkbox', { name: 'example/tasks', exact: true }).isChecked(), true);
     await page.getByRole('button', { name: '历史会话', exact: true }).click();
     await page.getByRole('button', { name: new RegExp('任务从页面提交后') }).click();
     const timeline = page.getByRole('region', { name: '对话与执行过程' });
     await timeline.getByText('已找到提交入口，正在核对后端接收路由。', { exact: true }).waitFor();
+    await page.evaluate(() => document.fonts.ready);
+    await page.waitForTimeout(300);
     for (let i = 0; i < 100 && !streams.size; i++) await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(streams.size, 1, 'SSE attached after history snapshot');
     assert.equal(cursors[0], events.length, 'reconnect starts after replay cursor');
@@ -112,8 +141,17 @@ async function main() {
     await page.waitForTimeout(300);
     await page.screenshot({ path: join(screenshots, 'mobile-completed.png') });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'no mobile horizontal overflow');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto('http://127.0.0.1:3107/admin');
+    await page.getByText('2/3 chunks indexed · 1 failed', { exact: true }).waitFor();
+    await page.getByText('Failure details · retry Reindex to reuse successful chunks', { exact: true }).click();
+    await page.getByText('file-1.go', { exact: true }).waitFor();
+    await page.screenshot({ path: join(screenshots, 'admin-partial.png'), fullPage: true });
+    await page.getByRole('button', { name: 'Reindex', exact: true }).click();
+    await page.getByText('3/3 chunks indexed · 0 failed', { exact: true }).waitFor();
+    assert.equal(await page.getByText('1/3 chunks failed; successful chunks remain searchable.', { exact: true }).count(), 0, 'completion clears stale errors');
     assert.deepEqual(errors, []);
-    console.log(`PASS: incremental SSE, plans, tool errors, scroll follow/pause, reconnect, completed replay, mobile. Screenshots: ${screenshots}`);
+    console.log(`PASS: SSE timeline, reconnect, mobile, partial Ask selection, admin failure details and retry refresh. Screenshots: ${screenshots}`);
   } finally {
     if (browser) await browser.close();
     for (const stream of streams) stream.end();

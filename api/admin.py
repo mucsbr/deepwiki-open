@@ -199,6 +199,9 @@ async def get_projects(_admin: dict = Depends(require_admin)):
                 "indexed_at": meta.get("indexed_at", ""),
                 "last_activity_at": meta.get("last_activity_at", ""),
                 "repo_path": meta.get("repo_path", ""),
+                "index_report": meta.get("index_report"),
+                "last_error": meta.get("last_error"),
+                "last_attempt_at": meta.get("last_attempt_at"),
                 "has_wiki_cache": wiki_info.get("has_cache", False),
                 "wiki_languages": wiki_info.get("languages", []),
             }
@@ -273,7 +276,7 @@ async def get_all_visible_projects(
                             "path_with_namespace": path,
                             "last_activity_at": data.get("last_activity_at", ""),
                             "is_indexed": meta is not None
-                            and meta.get("status") == "indexed",
+                            and meta.get("status") in {"indexed", "partial"},
                             "index_status": meta.get("status") if meta else None,
                         }
                     )
@@ -381,7 +384,7 @@ async def get_group_projects(
                 "name": p.get("name", ""),
                 "path_with_namespace": path,
                 "last_activity_at": p.get("last_activity_at", ""),
-                "is_indexed": meta is not None and meta.get("status") == "indexed",
+                "is_indexed": meta is not None and meta.get("status") in {"indexed", "partial"},
                 "index_status": meta.get("status") if meta else None,
             }
         )
@@ -438,7 +441,7 @@ async def search_projects(
                             "path_with_namespace": path,
                             "last_activity_at": data.get("last_activity_at", ""),
                             "is_indexed": meta is not None
-                            and meta.get("status") == "indexed",
+                            and meta.get("status") in {"indexed", "partial"},
                             "index_status": meta.get("status") if meta else None,
                         }
                     )
@@ -657,6 +660,7 @@ async def check_updates(_admin: dict = Depends(require_admin)):
 async def reindex_single_project(
     project_path: str,
     _admin: dict = Depends(require_admin),
+    force: bool = False,
 ):
     """Reindex a single project (git pull + re-embedding)."""
     if _batch_status["running"]:
@@ -698,8 +702,11 @@ async def reindex_single_project(
         _batch_status["operation"] = "reindex"
         _batch_status["progress"] = {"status": "starting", "current_project": project_path}
         try:
-            success = await indexer.reindex_project(project_info, on_progress=on_progress, force=True)
-            _batch_status["last_result"] = {"project": project_path, "success": success}
+            success = await indexer.reindex_project(project_info, on_progress=on_progress, force=force)
+            current = get_project_metadata(project_path) or {}
+            _batch_status["last_result"] = {"project": project_path, "success": success,
+                                            "status": current.get("status"), "index_report": current.get("index_report"),
+                                            "error": current.get("last_error")}
             _batch_status["last_run"] = datetime.now(timezone.utc).isoformat()
         except Exception as exc:
             logger.error("Single reindex failed for %s: %s", project_path, exc)

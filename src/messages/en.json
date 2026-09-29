@@ -146,6 +146,7 @@
     "copyright": "DeepWiki - AI-powered documentation for code repositories"
   },
   "ask": {
+    "partialIndex": "Partial index",
     "scopeTitle": "Search Scope",
     "scopeSearch": "Search repository or group path…",
     "scopeSelectAll": "Select all",
