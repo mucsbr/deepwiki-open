@@ -15,6 +15,7 @@ import tiktoken
 from api.config import configs, get_embedder_config, get_embedder_type
 from api.index_state import embedding_mismatch, index_coverage, valid_vector
 from api.tools.embedder import get_embedder
+from api.source_filters import DEPENDENCY_FILTER_SIGNATURE
 
 DATA_URI = re.compile(r"data:[\w.+/-]+(?:;[\w=.+-]+)*;base64,[A-Za-z0-9+/=\r\n]+", re.I)
 
@@ -148,6 +149,7 @@ def build_index(documents, expected, revision, embedder_type=None, previous=None
             reused.add(i)
     db = LocalDB(transformed_items={"split_and_embed": chunks})
     db.index_embedding_spec, db.source_revision = expected, revision
+    db.index_dependency_filter_signature = DEPENDENCY_FILTER_SIGNATURE
     db.index_vector_dimensions = dimensions
     db.index_failures = list(failures.values())
     db.sanitized_data_uris, db.reused_chunks = removed, len(reused)

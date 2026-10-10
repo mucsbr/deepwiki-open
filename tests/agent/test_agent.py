@@ -321,9 +321,12 @@ def test_indexed_status_requires_commit_vectors_and_index_file(repository, monke
     })
 
     def prepared(*_args, **_kwargs):
+        from api.source_filters import DEPENDENCY_FILTER_SIGNATURE
+
         documents = [Document(text="submit", vector=[0.1, 0.2])]
         database = LocalDB(transformed_items={"split_and_embed": documents})
         database.index_embedding_spec = embedding_spec()
+        database.index_dependency_filter_signature = DEPENDENCY_FILTER_SIGNATURE
         database.source_revision = repo.commit
         database.save_state(str(index_path))
         return documents

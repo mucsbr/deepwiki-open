@@ -37,6 +37,8 @@ def migration(tmp_path, monkeypatch):
     ]
     database = LocalDB(transformed_items={"split_and_embed": documents})
     database.index_embedding_spec = embedding_spec()
+    from api.source_filters import DEPENDENCY_FILTER_SIGNATURE
+    database.index_dependency_filter_signature = DEPENDENCY_FILTER_SIGNATURE
     database.source_revision = repo.commit
     database.save_state(str(path))
     project = {

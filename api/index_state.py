@@ -140,7 +140,8 @@ def database_problem(
 
 
 def index_problem(
-    path: Path, revision: str | None = None, embedder_type: str | None = None
+    path: Path, revision: str | None = None, embedder_type: str | None = None,
+    *, check_dependency_filter: bool = False,
 ) -> str | None:
     if not path.is_file() or path.is_symlink():
         return "Index file is missing or is not a regular file."
@@ -151,7 +152,12 @@ def index_problem(
         import api.ollama_patch  # noqa: F401
 
         database = LocalDB.load_state(str(path))
-        return database_problem(database, embedding_spec(embedder_type), revision)
+        problem = database_problem(database, embedding_spec(embedder_type), revision)
+        if problem is None and check_dependency_filter:
+            from api.source_filters import dependency_filter_problem
+
+            problem = dependency_filter_problem(database)
+        return problem
     except Exception:  # noqa: BLE001 -- incompatible/corrupt pickles may raise SDK-specific errors
         return "Index file is unreadable."
 

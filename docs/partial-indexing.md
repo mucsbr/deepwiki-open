@@ -25,6 +25,14 @@ Ask 的 `search_index` 返回覆盖率和失败信息，缺少搜索结果不能
 `max_chunk_tokens`。该估算不等同于所有模型的 tokenizer。
 HTTP 400/422 批次会拆分以隔离坏片段；限流、超时及服务故障不会递归拆批。
 
+代码索引在遍历前剪枝安装依赖目录，包括 Go/PHP/Ruby 的 `vendor`、JS 的
+`node_modules`、Python 虚拟环境和 `site-packages`、Java 构建缓存、iOS 的
+`Pods`/Carthage、Flutter/Dart 缓存及 NuGet/Cargo 缓存。显式 inclusion 范围
+内的嵌套依赖目录也跳过；普通 `packages`、`libs`、`third_party` 源码目录保留。
+该规则只影响向量索引，不删除仓库文件，也不限制 Agent 直接读取依赖源码。
+索引保存过滤规则签名，Reindex 不会误用过滤规则更新前的完整缓存；模型和
+代码版本兼容的自有代码片段仍可复用向量，已排除的依赖不会留在新索引中。
+
 新增索引不序列化 provider 客户端或请求参数，日志不记录完整 embedding
 输入。历史日志不自动删除。旧的 `error` 记录无法凭空恢复错误详情；下一次
 Reindex 会保存新的诊断信息。

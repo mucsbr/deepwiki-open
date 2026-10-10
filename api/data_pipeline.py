@@ -7,7 +7,7 @@ import json
 import tiktoken
 import logging
 import base64
-import glob
+from fnmatch import fnmatch
 import pickle
 import tempfile
 import fcntl
@@ -20,6 +20,7 @@ import requests
 from requests.exceptions import RequestException
 
 from api.tools.embedder import get_embedder
+from api.source_filters import directory_matches, is_dependency_path, dependency_filter_problem
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -349,8 +350,10 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
         Returns:
             bool: True if the file should be processed, False otherwise
         """
-        file_path_parts = os.path.normpath(file_path).split(os.sep)
+        relative_directory = os.path.dirname(os.path.relpath(file_path, path))
         file_name = os.path.basename(file_path)
+        if is_dependency_path(relative_directory):
+            return False
 
         if use_inclusion:
             # Inclusion mode: file must be in included directories or match included files
@@ -359,15 +362,14 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
             # Check if file is in an included directory
             if included_dirs:
                 for included in included_dirs:
-                    clean_included = included.strip("./").rstrip("/")
-                    if clean_included in file_path_parts:
+                    if directory_matches(relative_directory, included):
                         is_included = True
                         break
 
             # Check if file matches included file patterns
             if not is_included and included_files:
                 for included_file in included_files:
-                    if file_name == included_file or file_name.endswith(included_file):
+                    if fnmatch(file_name, included_file) or file_name.endswith(included_file):
                         is_included = True
                         break
 
@@ -388,23 +390,43 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
 
             # Check if file is in an excluded directory
             for excluded in excluded_dirs:
-                clean_excluded = excluded.strip("./").rstrip("/")
-                if clean_excluded in file_path_parts:
+                if directory_matches(relative_directory, excluded):
                     is_excluded = True
                     break
 
             # Check if file matches excluded file patterns
             if not is_excluded:
                 for excluded_file in excluded_files:
-                    if file_name == excluded_file:
+                    if fnmatch(file_name, excluded_file):
                         is_excluded = True
                         break
 
             return not is_excluded
 
-    # Process code files first
+    # Prune dependency directories BEFORE descending into them. A glob per
+    # extension would still scan every vendor tree even if files were rejected.
+    files_by_extension = {ext: [] for ext in code_extensions + doc_extensions}
+    for directory, subdirectories, names in os.walk(path, topdown=True, followlinks=False):
+        kept = []
+        for name in sorted(subdirectories):
+            full = os.path.join(directory, name)
+            relative = os.path.relpath(full, path)
+            if name.startswith(".") or os.path.islink(full) or is_dependency_path(relative):
+                continue
+            if not use_inclusion_mode and any(directory_matches(relative, pattern) for pattern in excluded_dirs):
+                continue
+            kept.append(name)
+        subdirectories[:] = kept
+        for name in sorted(names):
+            if name.startswith("."):
+                continue
+            ext = os.path.splitext(name)[1]
+            if ext in files_by_extension:
+                files_by_extension[ext].append(os.path.join(directory, name))
+
+    # Preserve the existing code-first extension ordering.
     for ext in code_extensions:
-        files = glob.glob(f"{path}/**/*{ext}", recursive=True)
+        files = files_by_extension[ext]
         for file_path in files:
             # Check if file should be processed based on inclusion/exclusion rules
             if not should_process_file(file_path, use_inclusion_mode, included_dirs, included_files, excluded_dirs, excluded_files):
@@ -445,7 +467,7 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
 
     # Then process documentation files
     for ext in doc_extensions:
-        files = glob.glob(f"{path}/**/*{ext}", recursive=True)
+        files = files_by_extension[ext]
         for file_path in files:
             # Check if file should be processed based on inclusion/exclusion rules
             if not should_process_file(file_path, use_inclusion_mode, included_dirs, included_files, excluded_dirs, excluded_files):
@@ -1039,6 +1061,7 @@ class DatabaseManager:
                 previous = self.db
                 documents = self.db.get_transformed_data(key="split_and_embed")
                 problem = database_problem(self.db, expected, revision, allow_partial=not retry_failed)
+                problem = problem or dependency_filter_problem(self.db)
                 if problem is None and not force_reindex:
                     dimensions = expected.get("dimensions") or getattr(self.db, "index_vector_dimensions", None)
                     usable = [doc for doc in documents if valid_vector(doc.vector, dimensions)]

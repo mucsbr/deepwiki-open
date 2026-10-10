@@ -154,7 +154,7 @@ class BatchIndexer:
         except ValueError:
             return True
         index_path = root / "databases" / f"{repo.root.name}.pkl"
-        problem = index_problem(index_path, repo.commit)
+        problem = index_problem(index_path, repo.commit, check_dependency_filter=True)
         if problem:
             logger.info("Reindex required for %s: %s", path, problem)
         return problem is not None
