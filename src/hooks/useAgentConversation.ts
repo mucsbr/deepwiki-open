@@ -1,11 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { agentRequest, agentRequestId, streamAgentEvents } from '@/utils/agentClient';
+import { agentRequest, agentRequestId, streamAgentEvents, type AgentAuth } from '@/utils/agentClient';
 import { isActive, type AgentDocument, type AgentEvent, type AgentRun, type AgentSession, type SessionDetail, type RunActivity } from '@/components/agent/types';
 import { applyAgentEvent, emptyActivity, replayActivity } from '@/utils/agentActivity';
 
-export function useAgentConversation(token: string | null) {
+export function useAgentConversation(token: AgentAuth | null, publicSettings?: { groups: string[]; systemPrompt: string }) {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [session, setSession] = useState<SessionDetail | null>(null);
   const [error, setError] = useState('');
@@ -116,11 +116,17 @@ export function useAgentConversation(token: string | null) {
     let sid = selected.current;
     try {
       if (!sid) {
-        const created = await agentRequest<AgentSession>(token, '/sessions', { repos, language });
+        const body = publicSettings
+          ? { groups: publicSettings.groups, system_prompt: publicSettings.systemPrompt, language }
+          : { repos, language };
+        const created = await agentRequest<AgentSession>(token, '/sessions', body);
         sid = created.id; selected.current = sid;
         setSession({ ...created, runs: [], documents: [] });
       }
-      const run = await agentRequest<AgentRun>(token, `/sessions/${sid}/runs`, { message, request_id: agentRequestId(), provider, model });
+      const run = await agentRequest<AgentRun>(token, `/sessions/${sid}/runs`, {
+        message, request_id: agentRequestId(), provider, model,
+        ...(publicSettings ? { system_prompt: publicSettings.systemPrompt } : {}),
+      });
       const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`);
       if (selected.current !== sid) return true;
       hydrate(detail); void connect(sid, run.id, detail.runs.find(item => item.id === run.id)?.activity?.cursor); void refreshHistory().catch(() => {});
@@ -138,7 +144,7 @@ export function useAgentConversation(token: string | null) {
       }
       return false;
     } finally { setPending(false); }
-  }, [token, pending, connect, refreshHistory, hydrate]);
+  }, [token, pending, connect, refreshHistory, hydrate, publicSettings]);
 
   const control = useCallback(async (rid: string, action: 'cancel' | 'resume', model: { provider?: string; model?: string } = {}) => {
     if (!token || !selected.current) return;

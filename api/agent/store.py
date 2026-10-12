@@ -58,6 +58,13 @@ class Store:
                     "UPDATE runs SET repos=(SELECT repos FROM sessions "
                     "WHERE sessions.id=runs.session_id)"
                 )
+            if "system_prompt" not in columns:
+                db.execute("ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
+            session_columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
+            if "public_groups" not in session_columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN public_groups TEXT")
+            if "system_prompt" not in session_columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def connect(self):
@@ -76,6 +83,7 @@ class Store:
             return None
         result = dict(row)
         result["repos"] = json.loads(result["repos"])
+        result["public_groups"] = json.loads(result.get("public_groups") or "[]")
         return result
 
     @staticmethod
@@ -86,12 +94,15 @@ class Store:
         result["repos"] = json.loads(result["repos"]) if result["repos"] else None
         return result
 
-    def create_session(self, owner: str, repos: list[dict], language: str) -> dict:
+    def create_session(self, owner: str, repos: list[dict], language: str, *,
+                       public_groups: list[str] | None = None, system_prompt: str = "") -> dict:
         sid, stamp = str(uuid4()), now()
         with self.connect() as db:
             db.execute(
-                "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (sid, owner, "", json.dumps(repos), language, stamp, stamp),
+                "INSERT INTO sessions (id,owner,title,repos,language,created_at,updated_at,public_groups,system_prompt) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (sid, owner, "", json.dumps(repos), language, stamp, stamp,
+                 json.dumps(public_groups) if public_groups is not None else None, system_prompt),
             )
         return self.get_session(sid, owner)
 
@@ -102,6 +113,18 @@ class Store:
                     "SELECT * FROM sessions WHERE id=? AND owner=?", (sid, owner)
                 ).fetchone()
             )
+
+    def set_system_prompt(self, sid: str, owner: str, prompt: str):
+        with self.connect() as db:
+            db.execute("UPDATE sessions SET system_prompt=? WHERE id=? AND owner=?", (prompt, sid, owner))
+
+    def active_for_owner(self, owner: str) -> list[dict]:
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                "SELECT runs.id,runs.session_id,runs.status FROM runs JOIN sessions "
+                "ON sessions.id=runs.session_id WHERE sessions.owner=? AND runs.status IN ('queued','running')",
+                (owner,),
+            )]
 
     def list_sessions(self, owner: str, limit: int = 50, offset: int = 0) -> list[dict]:
         with self.connect() as db:
@@ -161,9 +184,9 @@ class Store:
                     "Resume the unfinished run or start a new conversation."
                 )
             db.execute(
-                "INSERT INTO runs (id,session_id,request_id,message,provider,model,status,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,'queued',?,?)",
-                (rid, sid, request_id, message, provider, model, stamp, stamp),
+                "INSERT INTO runs (id,session_id,request_id,message,provider,model,status,created_at,updated_at,system_prompt) "
+                "VALUES (?,?,?,?,?,?,'queued',?,?,(SELECT system_prompt FROM sessions WHERE id=?))",
+                (rid, sid, request_id, message, provider, model, stamp, stamp, sid),
             )
             db.execute(
                 "UPDATE sessions SET title=CASE WHEN title='' THEN ? ELSE title END, updated_at=? WHERE id=?",

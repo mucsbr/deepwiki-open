@@ -10,6 +10,13 @@ export interface AskProps {
   onRef?: (ref: { clearConversation: () => void }) => void;
   relatedRepos?: string[];
   isGlobalAsk?: boolean;
+  publicAccess?: {
+    visitorKey: string | null;
+    groups: { id: string; name: string }[];
+    selectedGroups: string[];
+    systemPrompt: string;
+    onSessionSettings: (groups: string[], prompt: string) => void;
+  };
 }
 export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
 export interface AgentRun {
@@ -22,6 +29,9 @@ export interface AgentDocument { name: string; content: string; updated_at: stri
 export interface AgentSession {
   id: string; title: string; repos: { project: string; url: string; commit: string }[];
   language: string; updated_at: string;
+  public_groups?: string[];
+  system_prompt?: string;
+  active_status?: RunStatus | null;
 }
 export interface SessionDetail extends AgentSession { runs: AgentRun[]; documents: AgentDocument[] }
 export interface AgentEvent {

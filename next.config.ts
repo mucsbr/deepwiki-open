@@ -38,6 +38,10 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
+        source: '/api/public-agent/:path*',
+        destination: `${TARGET_SERVER_BASE_URL}/api/public-agent/:path*`,
+      },
+      {
         source: '/api/agent/:path*',
         destination: `${TARGET_SERVER_BASE_URL}/api/agent/:path*`,
       },

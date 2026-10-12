@@ -20,10 +20,18 @@ async def current_user(request: Request) -> dict:
 
 
 def owner_id(user: dict) -> str:
+    if user.get("public_ask"):
+        return "public:" + user["visitor_owner"]
     value = user.get("gitlab_user_id")
     if value is None:
         raise HTTPException(401, "GitLab identity required")
     return str(value)
+
+
+def scoped_user(session: dict, user: dict) -> dict:
+    if user.get("public_ask"):
+        return {**user, "public_groups": session.get("public_groups", [])}
+    return user
 
 
 class Access:
@@ -32,6 +40,11 @@ class Access:
         self._refresh_locks: dict[str, asyncio.Lock] = {}
 
     async def check(self, projects: list[str], user: dict):
+        if user.get("public_ask"):
+            from api.public_ask import check_public_scope
+
+            check_public_scope(projects, user.get("public_groups", []))
+            return
         from api.config import GITLAB_URL
         from api.gitlab_permission import check_repo_access
 
@@ -119,8 +132,14 @@ class Access:
         """Read current default-branch commits using the requester's GitLab session."""
         from api.config import GITLAB_URL
 
-        token = user["gitlab_access_token"]
-        headers = {"Authorization": f"Bearer {token}"}
+        if user.get("public_ask"):
+            from api.config import GITLAB_SERVICE_TOKEN
+
+            if not GITLAB_SERVICE_TOKEN:
+                raise HTTPException(503, "Configure GitLab service token to refresh published code.")
+            headers = {"PRIVATE-TOKEN": GITLAB_SERVICE_TOKEN}
+        else:
+            headers = {"Authorization": f"Bearer {user['gitlab_access_token']}"}
         semaphore = asyncio.Semaphore(5)
 
         async with httpx.AsyncClient(verify=False, timeout=20.0) as client:

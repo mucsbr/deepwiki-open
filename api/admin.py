@@ -26,6 +26,7 @@ from api.config import (
 )
 from api.gitlab_auth import get_current_user
 from api.metadata_store import get_all_indexed_projects, get_project_metadata
+from api.public_ask import PublicAskSettings, load_settings as load_public_ask, save_settings as save_public_ask
 from api.product_manager import (
     list_products as pm_list_products,
     get_product as pm_get_product,
@@ -85,6 +86,28 @@ async def require_admin(current_user: dict = Depends(get_current_user)) -> dict:
     if current_user["username"] not in ADMIN_USERNAMES:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
+
+
+@admin_router.get("/public-ask")
+async def public_ask_settings(_admin: dict = Depends(require_admin)):
+    return load_public_ask().model_dump()
+
+
+@admin_router.put("/public-ask")
+async def update_public_ask(body: PublicAskSettings, _admin: dict = Depends(require_admin)):
+    from api.agent.repositories import project_path
+
+    metadata = get_all_indexed_projects()
+    for group in body.groups:
+        try:
+            group.repos = list(dict.fromkeys(project_path(repo, GITLAB_URL) for repo in group.repos))
+        except ValueError as exc:
+            raise HTTPException(422, f"{group.name}: {exc}") from exc
+        missing = [repo for repo in group.repos if repo not in metadata]
+        unavailable = [repo for repo in group.repos if metadata.get(repo, {}).get("status") not in {"indexed", "partial"}]
+        if missing or (body.enabled and group.enabled and unavailable):
+            raise HTTPException(422, f"{group.name}: 仓库索引不可用：{', '.join(missing or unavailable)}")
+    return save_public_ask(body).model_dump()
 
 
 # ---------------------------------------------------------------------------

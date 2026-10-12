@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .access import current_user, owner_id
+from .access import current_user, owner_id, scoped_user
 from .models import select_model
 from .store import ACTIVE, RESUMABLE
 
@@ -74,7 +74,7 @@ async def session_for(rt, sid: str, user: dict):
     session = rt.store.get_session(sid, owner_id(user))
     if session is None:
         raise HTTPException(404, "Conversation not found")
-    await rt.access.check([r["project"] for r in session["repos"]], user)
+    await rt.access.check([r["project"] for r in session["repos"]], scoped_user(session, user))
     return session
 
 
@@ -105,7 +105,7 @@ async def list_sessions(
     visible = []
     for session in sessions:
         try:
-            await rt.access.check([r["project"] for r in session["repos"]], user)
+            await rt.access.check([r["project"] for r in session["repos"]], scoped_user(session, user))
             visible.append(session)
         except HTTPException as exc:
             if exc.status_code != 403:
@@ -155,6 +155,8 @@ async def start_run(sid: UUID, body: NewRun, request: Request, user: AgentUser):
         existing = rt.store.find_request(str(sid), str(body.request_id))
         if existing:
             return existing
+        if user.get("public_ask") and rt.store.active_for_owner(owner_id(user)):
+            raise ValueError("当前浏览器已有任务排队或运行，请先等待完成或停止该任务。")
         rt.available()
         run = rt.store.create_run(
             str(sid), str(body.request_id), body.message.strip(), provider, model
@@ -175,6 +177,7 @@ async def resume_run(
         return run
     if run["status"] not in RESUMABLE:
         raise HTTPException(409, "Only unfinished runs can be resumed")
+    user = scoped_user(session, user)
     repos = await rt.access.readers(run["repos"], user) if run["repos"] else None
     try:
         provider, model = run["provider"], run["model"]
@@ -186,6 +189,8 @@ async def resume_run(
         latest = rt.store.get_run(str(rid))
         if latest["status"] in ACTIVE:
             return latest
+        if user.get("public_ask") and rt.store.active_for_owner(owner_id(user)):
+            raise ValueError("当前浏览器已有任务排队或运行，请先等待完成或停止该任务。")
         rt.available()
         rt.store.set_model(str(rid), provider, model)
         run = {**run, "provider": provider, "model": model}
@@ -209,11 +214,12 @@ async def run_events(
 ):
     rt = runtime(request)
     _, session = await run_for(rt, str(rid), user)
+    user = scoped_user(session, user)
 
     async def stream():
         cursor, checks = after, 0
         while not await request.is_disconnected():
-            if checks % 80 == 0:
+            if user.get("public_ask") or checks % 80 == 0:
                 try:
                     await rt.access.check(
                         [r["project"] for r in session["repos"]], user

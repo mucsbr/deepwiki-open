@@ -18,11 +18,22 @@ const normalize = (repo: string) => {
 };
 
 export default function AgentChat({ repoInfo, provider = '', model = '', isCustomModel = false,
-  customModel = '', language = 'en', onRef, relatedRepos = [], isGlobalAsk = false }: AskProps) {
+  customModel = '', language = 'en', onRef, relatedRepos = [], isGlobalAsk = false, publicAccess }: AskProps) {
   const { token } = useAuth();
   const { messages } = useLanguage();
   const t = (key: string, fallback: string): string => messages.agent?.[key] || fallback;
-  const chat = useAgentConversation(token);
+  const publicMode = !!publicAccess;
+  const privateToken = publicMode ? null : token;
+  const visitorKey = publicAccess?.visitorKey;
+  const selectedGroups = publicAccess?.selectedGroups;
+  const systemPrompt = publicAccess?.systemPrompt ?? '';
+  const auth = useMemo(() => publicMode
+    ? (visitorKey ? { visitorKey } : null)
+    : privateToken, [privateToken, publicMode, visitorKey]);
+  const publicSettings = useMemo(() => publicMode
+    ? { groups: selectedGroups ?? [], systemPrompt }
+    : undefined, [selectedGroups, systemPrompt, publicMode]);
+  const chat = useAgentConversation(auth, publicSettings);
   const [question, setQuestion] = useState('');
   const [selectedProvider, setProvider] = useState(provider);
   const [selectedModel, setModel] = useState(model);
@@ -40,29 +51,38 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
   const running = isActive(lastRun?.status);
   const currentPlan = lastRun && chat.activities[lastRun.id]?.items.findLast(item => item.kind === 'plan');
   const unfinished = !!lastRun && lastRun.status !== 'completed';
-  const scopeChanged = !!chat.session && JSON.stringify(chat.session.repos.map(repo => repo.project).sort()) !==
-    JSON.stringify([...new Set(repos.map(normalize))].sort());
+  const scopeChanged = !!chat.session && (publicAccess
+    ? JSON.stringify([...(chat.session.public_groups ?? [])].sort()) !== JSON.stringify([...publicAccess.selectedGroups].sort())
+    : JSON.stringify(chat.session.repos.map(repo => repo.project).sort()) !== JSON.stringify([...new Set(repos.map(normalize))].sort()));
+  const hasSelection = publicAccess ? publicAccess.selectedGroups.length > 0 : repos.length > 0;
   const document = chat.session?.documents.find(item => item.name === activeDocument);
 
   useEffect(() => { onRef?.({ clearConversation: chat.reset }); }, [onRef, chat.reset]);
+  const onSessionSettings = publicAccess?.onSessionSettings;
+  const sessionId = chat.session?.id;
+  const sessionPrompt = chat.session?.system_prompt ?? '';
+  const sessionGroupsKey = JSON.stringify(chat.session?.public_groups ?? []);
+  useEffect(() => {
+    if (sessionId && onSessionSettings) onSessionSettings(JSON.parse(sessionGroupsKey), sessionPrompt);
+  }, [sessionId, sessionPrompt, sessionGroupsKey, onSessionSettings]);
   useEffect(() => {
     setProvider(provider); setModel(model); setCustom(isCustomModel); setCustomValue(customModel);
   }, [provider, model, isCustomModel, customModel]);
   useEffect(() => {
-    if ((provider && model) || !token) return;
+    if ((provider && model) || !auth) return;
     let live = true;
-    agentRequest<{ defaultProvider: string; defaultModel: string }>(token, '/config').then(data => {
+    agentRequest<{ defaultProvider: string; defaultModel: string }>(auth, '/config').then(data => {
       if (!live) return;
       setProvider(data.defaultProvider || '');
       setModel(data.defaultModel || '');
     }).catch(() => {});
     return () => { live = false; };
-  }, [provider, model, token]);
+  }, [provider, model, auth]);
 
   const newConversation = () => { chat.reset(); setQuestion(''); setActiveDocument(''); };
   const send = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!question.trim() || running || unfinished || (!repos.length && !chat.session)) return;
+    if (!question.trim() || running || unfinished || (!hasSelection && !chat.session)) return;
     const accepted = await chat.send(question, repos, language, selectedProvider, custom ? customValue : selectedModel);
     if (accepted) setQuestion('');
   };
@@ -76,7 +96,7 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       <div className="flex gap-2 text-xs">
         <button className="btn-apple-secondary px-3 py-2" onClick={() => setHistoryOpen(value => !value)}>{t('history', 'History')}</button>
         <button className="btn-apple-secondary px-3 py-2" onClick={newConversation} disabled={chat.pending}>{t('newChat', 'New conversation')}</button>
-        <button className="btn-apple-secondary px-3 py-2" onClick={() => setModelOpen(true)} disabled={running}>{t('model', 'Model')}</button>
+        {!publicAccess && <button className="btn-apple-secondary px-3 py-2" onClick={() => setModelOpen(true)} disabled={running}>{t('model', 'Model')}</button>}
       </div>
     </header>
 
@@ -85,6 +105,7 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       {chat.sessions.map(item => <button key={item.id} onClick={() => { void chat.open(item.id); setActiveDocument(''); setHistoryOpen(false); }}
         className={`block w-full rounded-lg p-2 text-left text-sm hover:bg-[var(--background)] ${chat.session?.id === item.id ? 'text-[var(--accent-primary)]' : ''}`}>
         <span className="block truncate">{item.title || t('newChat', 'New conversation')}</span>
+        {item.active_status && <span className="mr-2 text-xs text-[var(--accent-primary)]">{t(item.active_status, item.active_status)}</span>}
         <span className="text-xs text-[var(--muted)]">{item.repos.length} {t('repositories', 'repositories')} · {new Date(item.updated_at).toLocaleString()}</span>
       </button>)}
       {chat.nextOffset !== null && <button className="p-2 text-sm" onClick={() => void chat.refreshHistory(chat.nextOffset ?? 0)}>{t('loadMore', 'Load more')}</button>}
@@ -95,7 +116,8 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       <ul className="mt-2 space-y-1">{chat.session.repos.map(repo => <li key={repo.project}>{repo.project} <code>{repo.commit.slice(0, 12)}</code></li>)}</ul>
     </details>}
     {scopeChanged && <p role="status" className="rounded-lg bg-amber-500/10 p-3 text-sm">{t('scopeChanged', 'This conversation keeps its source scope. Start a new conversation to use the current selection.')}</p>}
-    {!token && <p role="alert">{t('signIn', 'Sign in with GitLab to use the agent.')}</p>}
+    {!auth && !publicAccess && <p role="alert">{t('signIn', 'Sign in with GitLab to use the agent.')}</p>}
+    {publicAccess && chat.session && <p className="text-xs text-[var(--muted)]">当前会话分组：{(chat.session.public_groups ?? []).map(id => publicAccess.groups.find(group => group.id === id)?.name ?? id).join('、')}</p>}
     {chat.error && <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm">
       <p className="whitespace-pre-wrap">{chat.error}</p>
       {chat.session && <button className="mt-2 underline" onClick={() => void chat.open(chat.session!.id)}>{t('reconnect', 'Reconnect')}</button>}
@@ -156,15 +178,15 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       <textarea id={`agent-question-${isGlobalAsk ? 'global' : 'repo'}`} value={question} onChange={event => setQuestion(event.target.value)}
         placeholder={t('placeholder', 'Ask about this codebase…')} rows={3} maxLength={16000}
         className="w-full resize-y rounded-xl border border-[var(--border-color)] bg-[var(--background)] p-3 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent-primary)]/40"
-        disabled={!token || chat.pending} />
+        disabled={!auth || chat.pending} />
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-[var(--muted)]">{(chat.session?.repos.length || repos.length) ? `${chat.session?.repos.length || repos.length} ${t('repositories', 'repositories')} · ${custom ? customValue : selectedModel}` : t('noRepos', 'Select an indexed repository first.')}</p>
+        <p className="text-xs text-[var(--muted)]">{(chat.session || hasSelection) ? `${chat.session?.repos.length || (publicAccess ? publicAccess.selectedGroups.length : repos.length)} ${publicAccess && !chat.session ? '个分组' : t('repositories', 'repositories')} · ${custom ? customValue : selectedModel}` : publicAccess ? '请选择后台开放的分组。' : t('noRepos', 'Select an indexed repository first.')}</p>
         {running && lastRun ? <button type="button" className="btn-apple-secondary px-4 py-2 text-sm" disabled={chat.pending} onClick={() => void chat.control(lastRun.id, 'cancel')}>{t('stop', 'Stop')}</button> :
-          <button type="submit" className="btn-apple px-4 py-2 text-sm disabled:opacity-40" disabled={!token || !question.trim() || (!repos.length && !chat.session) || chat.pending || unfinished}>{t('send', 'Send')}</button>}
+          <button type="submit" className="btn-apple px-4 py-2 text-sm disabled:opacity-40" disabled={!auth || !question.trim() || (!hasSelection && !chat.session) || chat.pending || unfinished}>{t('send', 'Send')}</button>}
       </div>
     </form>
-    <ModelSelectionModal isOpen={modelOpen} onClose={() => setModelOpen(false)} provider={selectedProvider} setProvider={setProvider}
+    {!publicAccess && <ModelSelectionModal isOpen={modelOpen} onClose={() => setModelOpen(false)} provider={selectedProvider} setProvider={setProvider}
       model={selectedModel} setModel={setModel} isCustomModel={custom} setIsCustomModel={setCustom} customModel={customValue}
-      setCustomModel={setCustomValue} onApply={() => {}} isComprehensiveView={comprehensive} setIsComprehensiveView={setComprehensive} showWikiType={false} />
+      setCustomModel={setCustomValue} onApply={() => {}} isComprehensiveView={comprehensive} setIsComprehensiveView={setComprehensive} showWikiType={false} />}
   </section>;
 }

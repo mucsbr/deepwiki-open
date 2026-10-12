@@ -20,6 +20,7 @@ import { NextRequest, NextResponse } from 'next/server';
 // Segments that are known static routes and should NOT be rewritten.
 const STATIC_PREFIXES = new Set([
   'admin',
+  'ask',
   'auth',
   'wiki',
   'api',

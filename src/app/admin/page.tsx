@@ -26,6 +26,7 @@ import {
 } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import IndexCoverage from '@/components/IndexCoverage';
+import PublicAskSettings from '@/components/PublicAskSettings';
 import type { IndexReport } from '@/types/indexStatus';
 import { useAuth, getAuthHeaders } from '@/contexts/AuthContext';
 
@@ -117,7 +118,7 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(true);
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<'indexed' | 'batch' | 'products'>('indexed');
+  const [activeTab, setActiveTab] = useState<'indexed' | 'batch' | 'products' | 'publicAsk'>('indexed');
 
   // Product management states
   const [products, setProducts] = useState<Product[]>([]);
@@ -678,10 +679,15 @@ export default function AdminPage() {
                 <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-primary)]" />
               )}
             </button>
+            <button onClick={() => setActiveTab('publicAsk')}
+              className={`px-6 py-3 text-sm font-medium ${activeTab === 'publicAsk' ? 'text-[var(--accent-primary)]' : 'text-[var(--muted)]'}`}>
+              免登录 Ask
+            </button>
           </div>
 
           {/* Tab content */}
           <div className="p-6">
+            {activeTab === 'publicAsk' && token && <PublicAskSettings token={token} projects={projects} />}
             {/* ============================================================ */}
             {/* Tab 1: Indexed Projects */}
             {/* ============================================================ */}

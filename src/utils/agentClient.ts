@@ -1,5 +1,24 @@
 import type { AgentEvent } from '@/components/agent/types';
 
+export type AgentAuth = string | { visitorKey: string };
+
+function connection(auth: AgentAuth): { base: string; headers: Record<string, string> } {
+  return typeof auth === 'string'
+    ? { base: '/api/agent', headers: { Authorization: `Bearer ${auth}` } }
+    : { base: '/api/public-agent', headers: { 'X-Public-Ask-Visitor': auth.visitorKey } };
+}
+
+export function publicVisitorKey(): string {
+  const storageKey = 'deepwiki_public_ask_visitor';
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (saved && /^[a-f0-9]{64}$/.test(saved)) return saved;
+  } catch { /* A private browser may disable persistent storage. */ }
+  const key = Array.from(crypto.getRandomValues(new Uint8Array(32)), byte => byte.toString(16).padStart(2, '0')).join('');
+  try { localStorage.setItem(storageKey, key); } catch { /* This tab can still converse. */ }
+  return key;
+}
+
 // getRandomValues also works on private HTTP origins where randomUUID is absent.
 export function agentRequestId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -9,10 +28,11 @@ export function agentRequestId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-export async function agentRequest<T>(token: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-  const response = await fetch(`/api/agent${path}`, {
+export async function agentRequest<T>(token: AgentAuth, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const { base, headers } = connection(token);
+  const response = await fetch(`${base}${path}`, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    headers: { ...headers, 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', signal,
   });
   if (!response.ok) {
@@ -26,10 +46,11 @@ export async function agentRequest<T>(token: string, path: string, body?: unknow
 }
 
 /** Authenticated fetch streaming: EventSource cannot set Bearer headers. */
-export async function streamAgentEvents(token: string, runId: string, after: number,
+export async function streamAgentEvents(token: AgentAuth, runId: string, after: number,
   signal: AbortSignal, onEvent: (event: AgentEvent) => void): Promise<void> {
-  const response = await fetch(`/api/agent/runs/${runId}/events?after=${after}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' }, signal, cache: 'no-store',
+  const { base, headers } = connection(token);
+  const response = await fetch(`${base}/runs/${runId}/events?after=${after}`, {
+    headers: { ...headers, Accept: 'text/event-stream' }, signal, cache: 'no-store',
   });
   if (!response.ok || !response.body) {
     const detail = await response.json().catch(() => ({}));

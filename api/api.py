@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # Import MCP server
 from api.mcp_server import mcp as mcp_server, get_authenticated_mcp_app
 from api.agent.router import router as agent_router, agent_lifespan
+from api.agent.public_router import router as public_agent_router
 
 
 @contextlib.asynccontextmanager
@@ -176,6 +177,7 @@ app.include_router(gitlab_auth_router)
 # Register Admin routes
 app.include_router(admin_router)
 app.include_router(agent_router)
+app.include_router(public_agent_router)
 
 # Mount MCP Server (Streamable HTTP) – wrapped with JWT authentication
 app.mount("/mcp", get_authenticated_mcp_app())
