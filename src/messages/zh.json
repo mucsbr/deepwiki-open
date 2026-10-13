@@ -47,6 +47,7 @@
     "context": "上下文",
     "compact": "压缩上下文",
     "manualCompaction": "手动压缩上下文",
+    "retrying": "空摘要，正在重试",
     "automaticCompaction": "自动压缩上下文",
     "nothingToCompact": "上下文较小，无需压缩",
     "estimatedContext": "估算",

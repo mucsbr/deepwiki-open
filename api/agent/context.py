@@ -16,7 +16,11 @@ from deepagents.middleware.summarization import (
 )
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, get_buffer_string
+
+
+class EmptySummaryError(ValueError):
+    """A blank/internal-only summary cannot replace existing evidence."""
 
 
 SUMMARY_PROMPT = """Rewrite a compact working record of this code investigation.
@@ -58,8 +62,16 @@ class ManagedSummarization(SummarizationMiddleware):
     def __init__(self, model, backend, emit, *, manual=False):
         budget = model.profile["max_input_tokens"]
         self.summary_tokens = max(128, min(int(os.getenv("AGENT_SUMMARY_TOKENS", "2000")), budget // 8))
-        self.summary_input_tokens = max(512, budget - self.summary_tokens - 2048)
+        self.generation_tokens = max(self.summary_tokens, min(
+            int(os.getenv("AGENT_SUMMARY_GENERATION_TOKENS", "8192")), budget // 2,
+        ))
+        known_output = (model.profile or {}).get("max_output_tokens")
+        if isinstance(known_output, int) and known_output > 0:
+            self.generation_tokens = min(self.generation_tokens, known_output)
+        self.summary_input_tokens = max(512, budget - self.generation_tokens - 2048)
         self.emit, self.manual = emit, manual
+        self._summary_gate = None
+        self._summary_succeeded = False
         defaults = compute_summarization_defaults(model)
         super().__init__(
             model=model, backend=backend, summary_prompt=SUMMARY_PROMPT,
@@ -73,12 +85,12 @@ class ManagedSummarization(SummarizationMiddleware):
         fields = getattr(type(model), "model_fields", {})
         parameter = ("num_predict" if "num_predict" in fields else
                      "max_output_tokens" if "max_output_tokens" in fields else "max_tokens")
-        self._lc_helper._summary_model = model.bind(**{parameter: self.summary_tokens}).with_retry()
+        self._lc_helper._summary_model = model.bind(**{parameter: self.generation_tokens}).with_retry()
 
     def bounded_summary(self, text):
         text = re.sub(r"<think>.*?(?:</think>|$)", "", text, flags=re.S | re.I).strip()
         if not text:
-            raise ValueError("Empty summary; original conversation has not been compacted")
+            raise EmptySummaryError("Empty summary; original conversation has not been compacted")
         # Some compatible gateways ignore max_tokens. A token-estimated fallback
         # prevents an ever-growing summary; the SDK keeps the full history.
         suffix = "\n[Summary shortened to budget; recover specific evidence from saved history.]"
@@ -99,12 +111,67 @@ class ManagedSummarization(SummarizationMiddleware):
         self.emit("compaction", {"id": identifier, "phase": "running", "manual": self.manual})
         try:
             prepared = self.summary_input(messages_to_summarize)
-            text = self.bounded_summary(await super()._acreate_summary(prepared))
+            prompt = self._lc_helper.summary_prompt.format(
+                messages=get_buffer_string(prepared, format="xml")
+            ).rstrip()
+            # Retry the summary request only, not source tools or agent rounds.
+            for attempt in range(1, 3):
+                response = await self._lc_helper._summary_model.ainvoke(
+                    prompt, config={"metadata": {"lc_source": "summarization"}},
+                )
+                metadata = response.response_metadata or {}
+                usage = response.usage_metadata or {}
+                reason = metadata.get("finish_reason")
+                diagnostics = {
+                    "id": identifier, "attempt": attempt,
+                    "finish_reason": reason if isinstance(reason, str) and reason in {"stop", "length", "tool_calls", "content_filter"} else "unknown",
+                    "generation_budget": self.generation_tokens,
+                }
+                for key in ("input_tokens", "output_tokens"):
+                    if isinstance(usage.get(key), int):
+                        diagnostics[key] = usage[key]
+                reasoning = (usage.get("output_token_details") or {}).get("reasoning")
+                if isinstance(reasoning, int):
+                    diagnostics["reasoning_tokens"] = reasoning
+                self.emit("compaction_diagnostics", diagnostics)
+                try:
+                    text = self.bounded_summary(response.text.strip())
+                    break
+                except EmptySummaryError:
+                    if attempt == 2:
+                        raise
+                    self.emit("compaction", {"id": identifier, "phase": "retrying", "manual": self.manual})
+            self._summary_succeeded = True
         except BaseException:
             self.emit("compaction", {"id": identifier, "phase": "interrupted", "manual": self.manual})
             raise
+        finally:
+            if self._summary_gate is not None:
+                self._summary_gate.set()
         self.emit("compaction", {"id": identifier, "phase": "completed", "manual": self.manual})
         return text
+
+    async def awrap_model_call(self, request, handler):
+        import asyncio
+
+        self._summary_gate = asyncio.Event()
+        self._summary_succeeded = False
+        try:
+            return await super().awrap_model_call(request, handler)
+        finally:
+            self._summary_gate.set()
+            self._summary_gate = None
+
+    async def _aoffload_to_backend(self, backend, messages, session_id):
+        # Native compaction generates and archives concurrently. Wait for a valid
+        # summary before queuing history-file writes: partial writes from a failed
+        # model node made old checkpoints look completed on resume.
+        gate = self._summary_gate
+        if gate is not None:
+            await gate.wait()
+            if not self._summary_succeeded:
+                return None
+        return await super()._aoffload_to_backend(backend, messages, session_id)
 
     def summary_input(self, messages):
         """Keep objective/prior summary and newest correction, then recent facts.
@@ -174,6 +241,8 @@ class ManagedSummarization(SummarizationMiddleware):
         if "_summarization_event" not in update:
             message = update["messages"][0].content
             if str(message).startswith("Compaction failed:"):
+                if "EmptySummaryError" in str(message):
+                    raise EmptySummaryError("Empty summary; original conversation has not been compacted")
                 raise RuntimeError("Compaction failed; original context is unchanged")
             return None
         update = {key: value for key, value in update.items() if key != "messages"}

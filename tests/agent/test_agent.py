@@ -1355,6 +1355,7 @@ def test_internal_summarization_is_not_streamed_as_answer(repository, interrupte
                     return SimpleNamespace(
                         values={"messages": [] if self.calls == 1 else [AIMessage(content="Visible answer")]},
                         next=(),
+                        tasks=(),
                     )
 
                 async def astream_events(self, _payload, **_kwargs):

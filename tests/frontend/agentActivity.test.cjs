@@ -18,7 +18,7 @@ test('context snapshots replay and compaction activity stops spinning after canc
     event(2, 'compaction', { id: 'auto', phase: 'running', manual: false }),
     event(3, 'compaction', { id: 'auto', phase: 'completed', manual: false }),
     event(4, 'context', { input_tokens: 5000, budget_tokens: 32000, source: 'estimated' }),
-    event(5, 'compaction', { id: 'manual', phase: 'running', manual: true }),
+    event(5, 'compaction', { id: 'manual', phase: 'retrying', manual: true }),
     event(6, 'status', { status: 'cancelled' }),
   ];
   const state = replayActivity({ events, cursor: 6 });

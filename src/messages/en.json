@@ -47,6 +47,7 @@
     "context": "Context usage",
     "compact": "Compact context",
     "manualCompaction": "Manual context compaction",
+    "retrying": "Empty summary; retrying",
     "automaticCompaction": "Automatic context compaction",
     "nothingToCompact": "Context is small; no compaction needed",
     "estimatedContext": "Estimate",

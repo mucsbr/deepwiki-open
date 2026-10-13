@@ -52,7 +52,7 @@ docker compose build \
 | `AGENT_DATA_DIR` | `~/.adalflow/agent` | 会话数据库、checkpoint 数据库、进程锁 |
 | `AGENT_MAX_CONCURRENT_RUNS` | `4` | 当前进程最多同时运行的分析数 |
 | `AGENT_RUN_TIMEOUT_SECONDS` | `900` | 单次执行时间预算，超时后可继续 |
-| `AGENT_CONTEXT_TOKENS` | `32000` | 上下文整理预算；应不大于实际模型输入限制，已知更小的模型限制优先 |
+| `AGENT_CONTEXT_TOKENS` | `1000000` | 当前网关模型的 1M 输入预算，85% 自动压缩；已知更小的模型限制优先 |
 
 模型适配覆盖 OpenAI-compatible、OpenRouter、DashScope、Google、Ollama、Azure 和 Bedrock。使用已有环境变量保存地址与密钥，浏览器不提交模型服务地址。框架能接入这些 provider 不代表所有模型都支持工具调用；须在实际代理上验证 `tools`、工具参数、`tool_calls` 与 `tool` 消息往返。没有正确工具调用能力的模型不能靠更改提示词补足。
 

@@ -28,7 +28,7 @@ from langgraph.errors import GraphRecursionError
 
 from .access import Access
 from .activity import public_input, tool_result
-from .context import ContextUsageMiddleware, ManagedSummarization, SnapshotBackend
+from .context import ContextUsageMiddleware, EmptySummaryError, ManagedSummarization, SnapshotBackend
 from .dsml import recover_dsml, stream_text
 from .models import build_model
 from .prompts import SYSTEM_PROMPT
@@ -270,10 +270,20 @@ class Runtime:
             )
             # A crash may occur after graph completion but before app status is
             # committed. Reconcile that checkpoint instead of replaying the turn.
-            checkpoint_finished = resume and already_submitted and not snapshot.next
+            errored_tasks = [task for task in snapshot.tasks if task.error]
+            checkpoint_finished = resume and already_submitted and not snapshot.next and not errored_tasks
+            if resume and already_submitted and any(task.name == "model" for task in errored_tasks):
+                # Legacy failed summaries could leave a queued file write and an
+                # empty next list. Re-enter the model with the SAME history and
+                # question, rather than replaying completed tools or user input.
+                payload = {}
+                self.store.event(rid, "recovery", {"phase": "retry_model", "reason": "failed_model_checkpoint"})
             if checkpoint_finished:
                 previous = snapshot.values.get("messages", [])[-1]
-                if (
+                if not isinstance(previous, AIMessage) or previous.tool_calls:
+                    payload = {}
+                    checkpoint_finished = False
+                elif (
                     isinstance(previous, AIMessage)
                     and not visible_text(text_content(previous.content)).strip()
                 ):
@@ -379,6 +389,11 @@ class Runtime:
                 answer=stream_text(visible_text(answer)),
                 error="The model emitted tool-call markup that could not be recovered. Resume or switch models.",
             )
+        except EmptySummaryError:
+            self.store.set_status(
+                rid, "interrupted", answer=stream_text(visible_text(answer)),
+                error="上下文压缩连续返回空摘要。原始证据和上一份有效摘要已保留；可原样继续重试，或更换模型后继续。",
+            )
         except GraphRecursionError:
             self.store.set_status(
                 rid,
@@ -415,9 +430,9 @@ class Runtime:
         async def authorize():
             await self.access.check([r.project for r in repos], user)
 
-        # OpenAI-compatible custom model names often have no known profile.
-        # Avoid the SDK's much larger fallback summarization threshold.
-        budget = max(2048, int(os.getenv("AGENT_CONTEXT_TOKENS", "32000")))
+        # The deployed custom model is configured for 1M context. Preserve a
+        # smaller verified model limit; never infer 32K from an unknown alias.
+        budget = max(2048, int(os.getenv("AGENT_CONTEXT_TOKENS", "1000000")))
         profile = dict(model.profile or {})
         known_limit = profile.get("max_input_tokens")
         profile["max_input_tokens"] = (
