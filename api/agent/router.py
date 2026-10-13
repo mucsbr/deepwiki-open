@@ -150,6 +150,15 @@ async def start_run(sid: UUID, body: NewRun, request: Request, user: AgentUser):
         return existing
     if not body.message.strip():
         raise HTTPException(422, "Message cannot be empty")
+    planned_scope = None
+    historical_projects = [repo["project"] for repo in session["repos"]]
+    if user.get("public_ask"):
+        from api.public_ask import published_repos
+
+        projects = published_repos(session.get("public_groups", []))
+        if len(projects) > 100:
+            raise HTTPException(422, "当前公开分组合计超过 100 个仓库，请联系管理员调整分组，或新建会话减少分组。")
+        planned_scope = await rt.access.create_scope(projects, scoped_user(session, user))
     try:
         provider, model = select_model(body.provider, body.model)
         adapter = await asyncio.to_thread(rt.model_factory, provider, model)
@@ -158,10 +167,20 @@ async def start_run(sid: UUID, body: NewRun, request: Request, user: AgentUser):
             return existing
         if user.get("public_ask") and rt.store.active_for_owner(owner_id(user)):
             raise ValueError("当前浏览器已有任务排队或运行，请先等待完成或停止该任务。")
+        if planned_scope is not None:
+            # Recheck both old evidence and new tools after asynchronous scope /
+            # model setup. Revoked source must not survive via conversation history.
+            await rt.access.check(
+                list(dict.fromkeys(historical_projects + [repo["project"] for repo in planned_scope])),
+                scoped_user(session, user),
+            )
         rt.available()
         run = rt.store.create_run(
-            str(sid), str(body.request_id), body.message.strip(), provider, model
+            str(sid), str(body.request_id), body.message.strip(), provider, model,
+            planned_scope=planned_scope,
         )
+        if planned_scope is not None:
+            session = {**session, "repos": planned_scope}
         rt.launch(run, session, None, user, adapter)
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc

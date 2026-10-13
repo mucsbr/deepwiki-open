@@ -35,7 +35,7 @@ export interface AgentSession {
   active_status?: RunStatus | null;
 }
 export interface ContextUsage { input_tokens: number; budget_tokens: number; source: 'reported' | 'estimated'; overhead_tokens?: number }
-export interface SessionDetail extends AgentSession { runs: AgentRun[]; documents: AgentDocument[]; context?: ContextUsage | null }
+export interface SessionDetail extends AgentSession { runs: AgentRun[]; documents: AgentDocument[]; context?: ContextUsage | null; published_repo_count?: number }
 export interface AgentEvent {
   id: number; type: string;
   data: { content?: string; status?: RunStatus; error?: string | boolean | null;

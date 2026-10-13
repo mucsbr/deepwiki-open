@@ -174,6 +174,7 @@ class Store:
     def create_run(
         self, sid: str, request_id: str, message: str, provider: str, model: str,
         *, kind: str = "analysis",
+        planned_scope: list[dict] | None = None,
     ) -> dict:
         rid, stamp = str(uuid4()), now()
         with self.connect() as db:
@@ -192,8 +193,9 @@ class Store:
                 (rid, sid, request_id, message, provider, model, stamp, stamp, sid, kind),
             )
             db.execute(
-                "UPDATE sessions SET title=CASE WHEN title='' THEN ? ELSE title END, updated_at=? WHERE id=?",
-                (message[:80], stamp, sid),
+                "UPDATE sessions SET title=CASE WHEN title='' THEN ? ELSE title END, "
+                "repos=COALESCE(?,repos),updated_at=? WHERE id=?",
+                (message[:80], json.dumps(planned_scope) if planned_scope is not None else None, stamp, sid),
             )
         return self.get_run(rid)
 

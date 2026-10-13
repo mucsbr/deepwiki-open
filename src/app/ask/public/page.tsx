@@ -48,7 +48,7 @@ export default function PublicAskPage() {
       {catalog?.enabled && <>
         <section aria-label="开放分组" className="glass-card space-y-3 p-4">
           <div className="flex items-center justify-between"><h2 className="font-medium">选择分组</h2><button onClick={() => void reload()} className="text-xs underline">刷新分组</button></div>
-          <p className="text-xs text-[var(--muted)]">可多选。分组选择用于新会话，历史会话保留原来的仓库范围。</p>
+          <p className="text-xs text-[var(--muted)]">可多选。会话保留所选分组，每次发送新消息都会同步后台最新仓库列表；更换分组请新建会话。</p>
           <div className="grid gap-3 sm:grid-cols-2">{catalog.groups.map(group => <label key={group.id}
             className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 ${selectedGroups.includes(group.id) ? 'border-[var(--accent-primary)] bg-[var(--accent-primary)]/5' : 'border-[var(--border-color)]'}`}>
             <input type="checkbox" className="mt-1" checked={selectedGroups.includes(group.id)}

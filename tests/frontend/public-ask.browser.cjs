@@ -52,9 +52,11 @@ async function main() {
       if (sessionMatch) {
         const session = sessions.get(sessionMatch[1]);
         if (!session || session.key !== key) return json({ detail: 'Conversation not found' }, 404);
-        if (!sessionMatch[2]) return json(session);
+        const currentRepos = [...new Set(settings.groups.filter(g => session.public_groups.includes(g.id) && g.enabled).flatMap(g => g.repos))];
+        if (!sessionMatch[2]) return json({ ...session, published_repo_count: currentRepos.length });
         session.title ||= body.message;
         session.system_prompt = body.system_prompt;
+        session.repos = currentRepos.map(repo);
         const run = { id: randomUUID(), session_id: session.id, message: body.message, provider: 'fixture', model: 'transport-only', status: 'queued', answer: '', repos: session.repos,
           activity: { events: [{ id: 1, type: 'status', data: { status: 'queued' } }], cursor: 1 } };
         runs.set(run.id, run); session.runs.push(run); return json(run, 202);
@@ -137,6 +139,11 @@ async function main() {
     assert.notEqual(aSession.key, bSession.key);
     assert.deepEqual(bSession.repos.map(r => r.project), ['easm/tasks']);
 
+    // Publication changes do not rewrite an old answer, but apply to the next
+    // question within the same visitor conversation.
+    settings.groups.find(group => group.name === 'bas').repos.push('bas/new-backend');
+    settings.revision++;
+
     await a.reload();
     await a.getByRole('button', { name: /^(历史会话|History)$/ }).click();
     assert.equal(await a.getByRole('button', { name: /B-业务规则/ }).count(), 0);
@@ -144,8 +151,18 @@ async function main() {
     await a.getByText('UI_TRANSPORT_FIXTURE: A-功能入口', { exact: true }).waitFor();
     await a.locator('summary').filter({ hasText: '自定义系统提示词' }).click();
     assert.equal(await a.getByRole('textbox', { name: '自定义系统提示词', exact: true }).inputValue(), prompt);
+    await a.getByText(/下一次发送新消息使用最新分组范围.*3/).waitFor();
+    await a.getByText(/后台仓库列表已更新/).waitFor();
+    assert.equal(aSession.repos.length, 2);
+    await a.locator('textarea[id^="agent-question-"]').fill('A-新增后端入口');
+    await a.getByRole('button', { name: /^(发送|Send)$/ }).click();
+    await a.getByText('UI_TRANSPORT_FIXTURE: A-新增后端入口', { exact: true }).waitFor();
+    assert.equal(aSession.repos.length, 3);
+    assert.equal(aSession.runs[0].repos.length, 2);
+    assert.ok(aSession.runs[1].repos.some(repo => repo.project === 'bas/new-backend'));
+    assert.equal([...sessions.values()].filter(session => session.key === aSession.key).length, 1);
     assert.ok(publicRequests.every(r => r.authorization === undefined));
-    console.log('PASS: admin scope publishing, login-free group selection, custom prompt, timeline, independent visitor histories, replay and no JWT forwarding.');
+    console.log('PASS: publishing, isolated histories, no JWT forwarding, live member changes in the same conversation and preserved historical scopes.');
   } finally {
     if (browser) await browser.close();
     await new Promise(resolve => server.close(resolve));

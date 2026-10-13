@@ -121,9 +121,15 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       <summary className="cursor-pointer">{t('scope', 'Source snapshot')} · {chat.session.repos.length} {t('repositories', 'repositories')}</summary>
       <ul className="mt-2 space-y-1">{chat.session.repos.map(repo => <li key={repo.project}>{repo.project} <code>{repo.commit.slice(0, 12)}</code></li>)}</ul>
     </details>}
-    {scopeChanged && <p role="status" className="rounded-lg bg-amber-500/10 p-3 text-sm">{t('scopeChanged', 'This conversation keeps its source scope. Start a new conversation to use the current selection.')}</p>}
+    {scopeChanged && <p role="status" className="rounded-lg bg-amber-500/10 p-3 text-sm">{publicAccess
+      ? t('publicScopeChanged', 'This conversation keeps its selected groups. Repository membership updates with each new message; start a new conversation to switch groups.')
+      : t('scopeChanged', 'This conversation keeps its source scope. Start a new conversation to use the current selection.')}</p>}
     {!auth && !publicAccess && <p role="alert">{t('signIn', 'Sign in with GitLab to use the agent.')}</p>}
     {publicAccess && chat.session && <p className="text-xs text-[var(--muted)]">当前会话分组：{(chat.session.public_groups ?? []).map(id => publicAccess.groups.find(group => group.id === id)?.name ?? id).join('、')}</p>}
+    {publicAccess && typeof chat.session?.published_repo_count === 'number' && <p role="status" className="text-xs text-[var(--muted)]">
+      {t('publishedScope', 'Next new message uses the latest published group scope')}: {chat.session.published_repo_count} {t('repositories', 'repositories')}
+      {chat.session.published_repo_count !== chat.session.repos.length && ` · ${t('publishedScopeChanged', 'Group membership changed; send a new message to sync. Resume keeps the original task scope.')}`}
+    </p>}
     {chat.error && <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/5 p-3 text-sm">
       <p className="whitespace-pre-wrap">{chat.error}</p>
       {chat.session && <button className="mt-2 underline" onClick={() => void chat.open(chat.session!.id)}>{t('reconnect', 'Reconnect')}</button>}

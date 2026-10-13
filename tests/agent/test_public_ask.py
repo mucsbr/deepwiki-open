@@ -15,9 +15,11 @@ from api.agent.public_router import router as public_router
 from api.agent.router import router as private_router
 from api.agent.runtime import Runtime
 from api.agent.repositories import SourceReader
+from api.agent.repositories import resolve_repository
 from api.agent.tools import make_tools
 from api.public_ask import PublicAskGroup, PublicAskSettings, load_settings, save_settings
-from tests.agent.test_agent import repository, TestModel
+from tests.agent.test_agent import repository, TestModel, run_git
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 
 KEY_A, KEY_B = "a" * 64, "b" * 64
@@ -68,6 +70,130 @@ def run(api, session, key=KEY_A, **fields):
     return api.client.post(f"/api/public-agent/sessions/{session['id']}/runs", headers=headers(key), json={
         "message": "定位入口", "request_id": str(uuid4()), **fields,
     })
+
+
+def publish_extra(api):
+    """A second real local clone: scoped API tests must not invent readable repos."""
+    import shutil
+
+    project = "group/extra"
+    root = api.rt.data_root / "repos/group_extra"
+    shutil.copytree(api.repo.root, root)
+    run_git(root, "remote", "set-url", "origin", f"https://gitlab.example/{project}.git")
+    extra = resolve_repository(project, "https://gitlab.example", api.rt.data_root)
+    api.metadata[project] = {"project_id": 2, "status": "indexed"}
+    api.settings.groups[0].repos.append(project)
+    api.settings = save_settings(api.settings)
+    return extra
+
+
+def test_existing_public_conversation_syncs_new_members_on_next_question(public_api):
+    session = create(public_api)
+    first = run(public_api, session).json()
+    public_api.rt.store.set_run_repos(first["id"], [public_api.repo.public()])
+    public_api.rt.store.set_status(first["id"], "completed", answer="Earlier evidence")
+    extra = publish_extra(public_api)
+    before = public_api.client.get(f"/api/public-agent/sessions/{session['id']}", headers=headers()).json()
+    assert len(before["repos"]) == 1
+    assert before["published_repo_count"] == 2
+    assert before["runs"][0]["answer"] == "Earlier evidence"
+    request_id = str(uuid4())
+    second = run(public_api, session, request_id=request_id)
+    assert second.status_code == 202, second.text
+    planned = public_api.launched[-1][1]
+    assert {r["project"] for r in planned["repos"]} == {public_api.repo.project, extra.project}
+    saved = public_api.rt.store.get_session(session["id"], "public:" + hashlib.sha256(KEY_A.encode()).hexdigest())
+    assert len(saved["repos"]) == 2
+    assert public_api.rt.store.get_run(first["id"])["repos"] == [public_api.repo.public()]
+    assert second.json()["repos"] is None  # actual revisions are set after refresh, not guessed at admission
+    again = run(public_api, session, request_id=request_id)
+    assert again.json()["id"] == second.json()["id"]
+    assert len(public_api.launched) == 2
+
+
+def test_new_members_are_available_to_real_agent_tools_without_losing_history(public_api, monkeypatch):
+    async def scenario():
+        api = public_api
+        session = create(api)
+        first = run(api, session).json()
+        api.rt.store.set_run_repos(first["id"], [api.repo.public()])
+        api.rt.store.set_status(first["id"], "completed")
+        extra = publish_extra(api)
+        await api.rt.start()
+        user = {"public_ask": True, "visitor_owner": hashlib.sha256(KEY_A.encode()).hexdigest()}
+        try:
+            first_graph = api.rt.create_graph(first, session, [api.repo], scoped_user(session, user), TestModel(responses=[]))
+            config = {"configurable": {"thread_id": session["id"]}}
+            await first_graph.aupdate_state(config, {"messages": [
+                HumanMessage(content=first["message"], id=first["id"]), AIMessage(content="Earlier verified evidence"),
+            ]}, as_node="model")
+            response = run(api, session, message="Use the newly published backend")
+            assert response.status_code == 202, response.text
+            entry = response.json()
+            planned = api.launched[-1][1]
+            observed = []
+
+            async def refresh(scope, principal, on_progress=None):
+                observed.extend(r["project"] for r in scope)
+                await api.rt.access.check(observed, principal)
+                return [api.repo, extra]
+
+            monkeypatch.setattr(api.rt.access, "refresh_readers", refresh)
+            model = TestModel(responses=[
+                AIMessage(content="", tool_calls=[{"name": "read_source", "args": {"repo": extra.project, "path": "order.py"}, "id": "read-new", "type": "tool_call"}]),
+                AIMessage(content="New backend source verified."),
+            ])
+            Runtime.launch(api.rt, entry, planned, None, user, model)
+            await api.rt.tasks[entry["id"]]
+            result = api.rt.store.get_run(entry["id"])
+            assert result["status"] == "completed", result
+            assert set(observed) == {api.repo.project, extra.project}
+            assert len(result["repos"]) == 2
+            state = await first_graph.aget_state(config)
+            assert any(m.content == "Earlier verified evidence" for m in state.values["messages"])
+            output = next(m for m in state.values["messages"] if isinstance(m, ToolMessage))
+            parsed = json.loads(output.content)
+            assert parsed["repo"] == extra.project and "submitted" in parsed["content"]
+            assert api.rt.store.get_run(first["id"])["repos"] == [api.repo.public()]
+        finally:
+            await api.rt.close()
+
+    asyncio.run(scenario())
+
+
+def test_removed_member_still_revokes_old_context_and_cannot_be_reused(public_api):
+    session = create(public_api)
+    first = run(public_api, session).json()
+    public_api.rt.store.set_status(first["id"], "cancelled")
+    extra = publish_extra(public_api)
+    public_api.settings.groups[0].repos = [extra.project]
+    public_api.settings = save_settings(public_api.settings)
+    assert run(public_api, session).status_code == 403
+    assert public_api.client.get(f"/api/public-agent/sessions/{session['id']}", headers=headers()).status_code == 403
+    fresh = create(public_api)
+    assert [r["project"] for r in fresh["repos"]] == [extra.project]
+    assert len(public_api.launched) == 1
+
+
+def test_scope_expansion_above_limit_is_not_silently_truncated(public_api):
+    public_api.settings.groups.append(PublicAskGroup(id="more", name="more", repos=[public_api.repo.project]))
+    public_api.settings = save_settings(public_api.settings)
+    session = create(public_api, groups=["bas", "more"])
+    public_api.settings.groups[-1].repos = [f"group/extra-{number}" for number in range(100)]
+    public_api.settings = save_settings(public_api.settings)
+    response = run(public_api, session)
+    assert response.status_code == 422 and "100" in response.text
+    assert not public_api.launched
+    assert public_api.rt.store.get_session(session["id"], "public:" + hashlib.sha256(KEY_A.encode()).hexdigest())["repos"] == session["repos"]
+
+
+def test_newly_published_unavailable_index_is_named_not_skipped(public_api):
+    session = create(public_api)
+    extra = publish_extra(public_api)
+    public_api.metadata[extra.project]["status"] = "error"
+    response = run(public_api, session)
+    assert response.status_code == 409 and extra.project in response.text
+    assert not public_api.launched
 
 
 def test_catalog_only_publishes_enabled_groups_without_repository_inventory(public_api):

@@ -1,6 +1,9 @@
 {
   "agent": {
     "title": "Code analysis agent",
+    "publicScopeChanged": "This conversation keeps its selected groups. Repository membership updates with each new message; start a new conversation to switch groups.",
+    "publishedScope": "Next new message uses the latest published group scope",
+    "publishedScopeChanged": "Group membership changed; send a new message to sync. Resume keeps the original task scope.",
     "subtitle": "Locate features, explain rules, trace flows and create documents.",
     "history": "History",
     "newChat": "New conversation",

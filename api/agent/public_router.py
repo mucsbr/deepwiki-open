@@ -76,7 +76,9 @@ async def create_session(body: NewPublicSession, request: Request, user: Visitor
 
 @router.get("/sessions/{sid}")
 async def get_session(sid: UUID, request: Request, user: Visitor):
-    return await api.get_session(sid, request, user)
+    result = await api.get_session(sid, request, user)
+    result["published_repo_count"] = len(published_repos(result["public_groups"]))
+    return result
 
 
 @router.post("/sessions/{sid}/runs", status_code=202)
