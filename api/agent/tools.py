@@ -24,6 +24,43 @@ def make_tools(
     index = IndexSearch(reader, data_root)
     wiki = wiki or WikiReader(reader, data_root)
     session_id = run["session_id"]
+    searches = set()
+    # Reuse the durable activity log across resumes. No tool schema allowlist:
+    # source/index/Wiki searches opt in via the helper below.
+    if hasattr(store, "activity"):
+        activity = store.activity(run["id"])["events"]
+        finished = {e["data"].get("id") for e in activity
+                    if e["type"] == "tool_end" and not e["data"].get("error")}
+        for event in activity:
+            value = event.get("data", {})
+            if event["type"] == "tool_start" and value.get("id") in finished and isinstance(value.get("input"), dict):
+                args = value["input"]
+                if isinstance(args.get("query"), str):
+                    searches.add((value.get("name"), args["query"].strip().casefold(), args.get("repo", "")))
+
+    async def search_call(name, query, repo, function, *args):
+        key = (name, query.strip().casefold(), repo)
+        repeated = key in searches
+        searches.add(key)
+        result = await call(function, *args)
+        value = json.loads(result)
+        if isinstance(value, dict) and value.get("error"):
+            # An unavailable provider/tool is not a completed negative search.
+            searches.discard(key)
+        if repeated:
+            if isinstance(value, dict) and not value.get("error"):
+                value["search_notice"] = (
+                    "This query was already searched in this repository scope. "
+                    "Do not repeat an unchanged query or just change spelling. "
+                    "If results are truncated, narrow to a concrete repo/path or "
+                    "increase the limit only to retrieve genuinely new matches. Follow a NEW "
+                    "source reference, or answer with verified findings and name the "
+                    "missing service implementation. Ask the user to add its repository; "
+                    "public Ask requires the administrator to publish it. "
+                    "No matches is not proof the feature does not exist."
+                )
+                result = json.dumps(value, ensure_ascii=False)
+        return result
 
     async def call(function, *args):
         # Recheck permissions for every invocation. The existing permission cache
@@ -70,7 +107,7 @@ def make_tools(
         search_index when you only know a business concept or behavior, not its code
         name. Empty repo searches selected repos only; prefer a relevant repo once known.
         """
-        return await call(reader.search, query, repo, limit)
+        return await search_call("search_source", query, repo, reader.search, query, repo, limit)
 
     @tool
     async def read_source(
@@ -99,7 +136,7 @@ def make_tools(
                 raise ValueError("Use source=code, or search_wiki for Wiki JSON.")
             return index.search(query, repo)
 
-        return await call(search)
+        return await search_call("search_index", query, repo, search)
 
     @tool
     async def get_wiki_summary(repo: str, offset: int = 0) -> str:
@@ -128,7 +165,7 @@ def make_tools(
         descriptions and source-file pointers. This reads JSON, not a Wiki vector
         index. Empty repo searches selected repos; search_index searches CODE by meaning.
         """
-        return await call(wiki.search, query, repo)
+        return await search_call("search_wiki", query, repo, wiki.search, query, repo)
 
     @tool
     async def load_flow_guide() -> str:

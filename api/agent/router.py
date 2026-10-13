@@ -137,6 +137,7 @@ async def get_session(sid: UUID, request: Request, user: AgentUser):
         **session,
         "runs": await asyncio.to_thread(runs_with_activity),
         "documents": rt.store.documents(str(sid)),
+        "context": rt.store.context_usage(str(sid)),
     }
 
 
@@ -177,6 +178,10 @@ async def resume_run(
         return run
     if run["status"] not in RESUMABLE:
         raise HTTPException(409, "Only unfinished runs can be resumed")
+    if not rt.store.can_resume(run):
+        raise HTTPException(409, "A newer question replaced this task. Continue from the latest question.")
+    if any(item["status"] in ACTIVE for item in rt.store.runs(str(session["id"]))):
+        raise HTTPException(409, "Stop the active analysis or compaction first.")
     user = scoped_user(session, user)
     repos = await rt.access.readers(run["repos"], user) if run["repos"] else None
     try:
@@ -189,6 +194,10 @@ async def resume_run(
         latest = rt.store.get_run(str(rid))
         if latest["status"] in ACTIVE:
             return latest
+        if not rt.store.can_resume(latest):
+            raise ValueError("A newer question replaced this task. Continue from the latest question.")
+        if any(item["status"] in ACTIVE for item in rt.store.runs(str(session["id"]))):
+            raise ValueError("Stop the active analysis or compaction first.")
         if user.get("public_ask") and rt.store.active_for_owner(owner_id(user)):
             raise ValueError("当前浏览器已有任务排队或运行，请先等待完成或停止该任务。")
         rt.available()
@@ -198,6 +207,31 @@ async def resume_run(
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
     return rt.store.get_run(str(rid))
+
+
+@router.post("/sessions/{sid}/compact", status_code=202)
+async def compact_session(sid: UUID, body: NewRun, request: Request, user: AgentUser):
+    rt = runtime(request)
+    session = await session_for(rt, str(sid), user)
+    existing = rt.store.find_request(str(sid), str(body.request_id))
+    if existing:
+        return existing
+    if not rt.store.runs(str(sid)):
+        raise HTTPException(409, "There is no conversation context to compact yet.")
+    try:
+        provider, model = select_model(body.provider, body.model)
+        adapter = await asyncio.to_thread(rt.model_factory, provider, model)
+        existing = rt.store.find_request(str(sid), str(body.request_id))
+        if existing:
+            return existing
+        if user.get("public_ask") and rt.store.active_for_owner(owner_id(user)):
+            raise ValueError("当前浏览器已有任务运行，请先停止再压缩。")
+        rt.available()
+        entry = rt.store.create_run(str(sid), str(body.request_id), "手动压缩上下文", provider, model, kind="compact")
+        rt.launch(entry, session, None, user, adapter)
+        return entry
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post("/runs/{rid}/cancel")

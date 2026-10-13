@@ -60,6 +60,8 @@ class Store:
                 )
             if "system_prompt" not in columns:
                 db.execute("ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''")
+            if "kind" not in columns:
+                db.execute("ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'analysis'")
             session_columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
             if "public_groups" not in session_columns:
                 db.execute("ALTER TABLE sessions ADD COLUMN public_groups TEXT")
@@ -170,7 +172,8 @@ class Store:
             )
 
     def create_run(
-        self, sid: str, request_id: str, message: str, provider: str, model: str
+        self, sid: str, request_id: str, message: str, provider: str, model: str,
+        *, kind: str = "analysis",
     ) -> dict:
         rid, stamp = str(uuid4()), now()
         with self.connect() as db:
@@ -179,20 +182,29 @@ class Store:
                 "SELECT * FROM runs WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
                 (sid,),
             ).fetchone()
-            if previous and previous["status"] != "completed":
+            if previous and previous["status"] in ACTIVE:
                 raise ValueError(
-                    "Resume the unfinished run or start a new conversation."
+                    "Stop the active task before sending another message or compacting."
                 )
             db.execute(
-                "INSERT INTO runs (id,session_id,request_id,message,provider,model,status,created_at,updated_at,system_prompt) "
-                "VALUES (?,?,?,?,?,?,'queued',?,?,(SELECT system_prompt FROM sessions WHERE id=?))",
-                (rid, sid, request_id, message, provider, model, stamp, stamp, sid),
+                "INSERT INTO runs (id,session_id,request_id,message,provider,model,status,created_at,updated_at,system_prompt,kind) "
+                "VALUES (?,?,?,?,?,?,'queued',?,?,(SELECT system_prompt FROM sessions WHERE id=?),?)",
+                (rid, sid, request_id, message, provider, model, stamp, stamp, sid, kind),
             )
             db.execute(
                 "UPDATE sessions SET title=CASE WHEN title='' THEN ? ELSE title END, updated_at=? WHERE id=?",
                 (message[:80], stamp, sid),
             )
         return self.get_run(rid)
+
+    def can_resume(self, run: dict) -> bool:
+        """Old analyses cannot replay after a newer user turn; compaction is not a turn."""
+        with self.connect() as db:
+            latest = db.execute(
+                "SELECT id FROM runs WHERE session_id=? AND kind='analysis' "
+                "ORDER BY created_at DESC, rowid DESC LIMIT 1", (run["session_id"],),
+            ).fetchone()
+            return run.get("kind", "analysis") == "analysis" and latest is not None and latest["id"] == run["id"]
 
     def set_status(
         self,
@@ -274,6 +286,15 @@ class Store:
                     legacy_round += 1
                 events.append(event)
         return {"events": events, "cursor": cursor}
+
+    def context_usage(self, sid: str) -> dict | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT e.data FROM events e JOIN runs r ON r.id=e.run_id "
+                "WHERE r.session_id=? AND e.kind='context' ORDER BY e.seq DESC LIMIT 1",
+                (sid,),
+            ).fetchone()
+            return json.loads(row["data"]) if row else None
 
     def save_document(self, sid: str, name: str, content: str):
         with self.connect() as db:

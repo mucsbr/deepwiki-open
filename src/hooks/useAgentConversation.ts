@@ -149,10 +149,34 @@ export function useAgentConversation(token: AgentAuth | null, publicSettings?: {
   const control = useCallback(async (rid: string, action: 'cancel' | 'resume', model: { provider?: string; model?: string } = {}) => {
     if (!token || !selected.current) return;
     const sid = selected.current; setPending(true); setError('');
-    try { await agentRequest<AgentRun>(token, `/runs/${rid}/${action}`, model); await open(sid); }
+    try {
+      await agentRequest<AgentRun>(token, `/runs/${rid}/${action}`, model);
+      if (selected.current !== sid) return;
+      controller.current?.abort();
+      const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`);
+      if (selected.current !== sid) return;
+      hydrate(detail); setRefresh(null); setReconnecting(false);
+      const active = detail.runs.find(run => isActive(run.status));
+      if (active) void connect(sid, active.id, active.activity?.cursor);
+      void refreshHistory().catch(() => {});
+    }
     catch (e) { setError(e instanceof Error ? e.message : 'Run action failed'); }
     finally { setPending(false); }
-  }, [token, open]);
+  }, [token, hydrate, connect, refreshHistory]);
+
+  const compact = useCallback(async (provider: string, model: string) => {
+    if (!token || !selected.current || pending) return;
+    const sid = selected.current; setPending(true); setError('');
+    try {
+      const run = await agentRequest<AgentRun>(token, `/sessions/${sid}/compact`, {
+        message: 'compact', request_id: agentRequestId(), provider, model,
+      });
+      const detail = await agentRequest<SessionDetail>(token, `/sessions/${sid}`);
+      if (selected.current !== sid) return;
+      hydrate(detail); void connect(sid, run.id, detail.runs.find(item => item.id === run.id)?.activity?.cursor);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Unable to compact context'); }
+    finally { setPending(false); }
+  }, [token, pending, hydrate, connect]);
 
   const download = useCallback((document: AgentDocument) => {
     const url = URL.createObjectURL(new Blob([document.content], { type: 'text/markdown;charset=utf-8' }));
@@ -160,5 +184,5 @@ export function useAgentConversation(token: AgentAuth | null, publicSettings?: {
   }, []);
 
   return { sessions, session, error, pending, activities, reconnecting, refresh, nextOffset,
-    reset, open, send, control, download, refreshHistory };
+    reset, open, send, control, compact, download, refreshHistory };
 }

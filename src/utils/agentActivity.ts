@@ -26,6 +26,16 @@ export function applyAgentEvent(state: RunActivity, event: AgentEvent): RunActiv
       ? { ...item, done: true, interrupted: false, error: !!data.error, result: data.result } : item);
   } else if (event.type === 'plan') {
     next.items.push({ kind: 'plan', id: `plan-${event.id}`, todos: data.todos ?? [] });
+  } else if (event.type === 'context' && typeof data.input_tokens === 'number' && typeof data.budget_tokens === 'number' && data.source) {
+    next.context = { input_tokens: data.input_tokens, budget_tokens: data.budget_tokens, source: data.source, overhead_tokens: data.overhead_tokens };
+    next.contextSequence = event.id;
+  } else if (event.type === 'compaction' && data.id && data.phase) {
+    const id = `compaction-${data.id}`;
+    const index = next.items.findIndex(item => item.kind === 'compaction' && item.id === id);
+    const item = { kind: 'compaction' as const, id, phase: data.phase, manual: !!data.manual,
+      before_tokens: data.before_tokens, after_tokens: data.after_tokens };
+    if (index < 0) next.items.push(item);
+    else next.items[index] = item;
   } else if (event.type === 'refresh') {
     const id = `refresh-${data.repo}-${next.items.filter(item => item.kind === 'status' && isActive(item.status)).length}`;
     const index = next.items.findIndex(item => item.kind === 'refresh' && item.id === id);
@@ -37,6 +47,7 @@ export function applyAgentEvent(state: RunActivity, event: AgentEvent): RunActiv
     // Keep interruption/resumption visible and prevent old tools spinning forever.
     next.items = next.items.map(item => item.kind === 'message' ? { ...item, done: true } : item);
     if (!isActive(data.status)) next.items = next.items.map(item => item.kind === 'tool' && !item.done ? { ...item, interrupted: true } : item);
+    if (!isActive(data.status)) next.items = next.items.map(item => item.kind === 'compaction' && item.phase === 'running' ? { ...item, phase: 'interrupted' } : item);
     if (data.status !== 'completed') next.items.push({ kind: 'status', id: `status-${event.id}`, status: data.status });
   }
   return next;

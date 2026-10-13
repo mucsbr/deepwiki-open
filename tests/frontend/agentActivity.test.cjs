@@ -12,6 +12,23 @@ require.extensions['.ts'] = (module, filename) => {
 const { emptyActivity, applyAgentEvent, replayActivity } = require('../../src/utils/agentActivity.ts');
 const event = (id, type, data) => ({ id, type, data });
 
+test('context snapshots replay and compaction activity stops spinning after cancellation', () => {
+  const events = [
+    event(1, 'context', { input_tokens: 28000, budget_tokens: 32000, source: 'reported' }),
+    event(2, 'compaction', { id: 'auto', phase: 'running', manual: false }),
+    event(3, 'compaction', { id: 'auto', phase: 'completed', manual: false }),
+    event(4, 'context', { input_tokens: 5000, budget_tokens: 32000, source: 'estimated' }),
+    event(5, 'compaction', { id: 'manual', phase: 'running', manual: true }),
+    event(6, 'status', { status: 'cancelled' }),
+  ];
+  const state = replayActivity({ events, cursor: 6 });
+  assert.equal(state.context.input_tokens, 5000);
+  assert.equal(state.context.source, 'estimated');
+  assert.equal(state.contextSequence, 4);
+  assert.equal(state.items[0].phase, 'completed');
+  assert.equal(state.items[1].phase, 'interrupted');
+});
+
 test('streamed rounds stay ordered; final answer replaces only its own draft', () => {
   const events = [
     event(1, 'draft', { id: 'a', content: 'Looking' }),

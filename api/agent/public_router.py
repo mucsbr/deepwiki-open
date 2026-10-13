@@ -107,6 +107,11 @@ async def cancel_run(rid: UUID, request: Request, user: Visitor):
     return await api.cancel_run(rid, request, user)
 
 
+@router.post("/sessions/{sid}/compact", status_code=202)
+async def compact_session(sid: UUID, body: PublicRun, request: Request, user: Visitor):
+    return await api.compact_session(sid, api.NewRun(message="compact", request_id=body.request_id), request, user)
+
+
 @router.get("/runs/{rid}/events")
 async def events(rid: UUID, request: Request, user: Visitor, after: int = Query(0, ge=0)):
     return await api.run_events(rid, request, user, after)

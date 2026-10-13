@@ -58,6 +58,12 @@ export default function RunTimeline({ run, items, t }: { run: AgentRun; items: A
         <Markdown content={item.content} allowHtml={false} />
       </div>;
       if (item.kind === 'tool') return <ToolActivity key={item.id} item={item} running={running} t={t} />;
+      if (item.kind === 'compaction') return <p key={item.id} role={item.phase === 'running' ? 'status' : undefined} className="text-xs text-[var(--muted)]">
+        {item.phase === 'running' ? '↻' : item.phase === 'completed' ? '✓' : '−'}{' '}
+        {item.manual ? t('manualCompaction', 'Manual context compaction') : t('automaticCompaction', 'Automatic context compaction')}
+        {' · '}{item.phase === 'skipped' ? t('nothingToCompact', 'Context is small; no compaction needed') : t(item.phase, item.phase)}
+        {typeof item.before_tokens === 'number' && typeof item.after_tokens === 'number' && ` · ≈${item.before_tokens.toLocaleString()} → ${item.after_tokens.toLocaleString()} tokens`}
+      </p>;
       if (item.kind === 'plan') return <details key={item.id} open={!running && item.id === latestPlan?.id}
         className="rounded-lg border border-[var(--accent-primary)]/25 bg-[var(--accent-primary)]/5 px-3 py-2 text-sm">
         <summary className="cursor-pointer font-medium">{t('plan', 'Plan')} · {item.todos.filter(todo => todo.status === 'completed').length}/{item.todos.length}</summary>

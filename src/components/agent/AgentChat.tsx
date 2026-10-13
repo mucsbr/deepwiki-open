@@ -47,10 +47,16 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
   const scopeKey = JSON.stringify([...new Set([primary, ...relatedRepos].filter(Boolean))].sort());
   const repos: string[] = useMemo(() => JSON.parse(scopeKey), [scopeKey]);
   const lastRun = chat.session?.runs.at(-1);
-  const { transcript, transcriptContent, following, jumpToLatest } = useChatScroll(`${chat.session?.id ?? ''}/${lastRun?.id ?? ''}`);
-  const running = isActive(lastRun?.status);
-  const currentPlan = lastRun && chat.activities[lastRun.id]?.items.findLast(item => item.kind === 'plan');
-  const unfinished = !!lastRun && lastRun.status !== 'completed';
+  const activeRun = chat.session?.runs.findLast(run => isActive(run.status));
+  const latestAnalysis = chat.session?.runs.findLast(run => run.kind !== 'compact');
+  const { transcript, transcriptContent, following, jumpToLatest } = useChatScroll(`${chat.session?.id ?? ''}/${activeRun?.id ?? lastRun?.id ?? ''}`);
+  const running = !!activeRun;
+  const currentPlan = activeRun && chat.activities[activeRun.id]?.items.findLast(item => item.kind === 'plan');
+  // A resumed analysis may predate a compaction run: compare event sequence,
+  // not run creation order, when choosing the newest context measurement.
+  const measured = Object.values(chat.activities).filter(activity => activity.context)
+    .sort((a, b) => (b.contextSequence ?? 0) - (a.contextSequence ?? 0))[0];
+  const context = measured?.context ?? chat.session?.context;
   const scopeChanged = !!chat.session && (publicAccess
     ? JSON.stringify([...(chat.session.public_groups ?? [])].sort()) !== JSON.stringify([...publicAccess.selectedGroups].sort())
     : JSON.stringify(chat.session.repos.map(repo => repo.project).sort()) !== JSON.stringify([...new Set(repos.map(normalize))].sort()));
@@ -82,7 +88,7 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
   const newConversation = () => { chat.reset(); setQuestion(''); setActiveDocument(''); };
   const send = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!question.trim() || running || unfinished || (!hasSelection && !chat.session)) return;
+    if (!question.trim() || running || (!hasSelection && !chat.session)) return;
     const accepted = await chat.send(question, repos, language, selectedProvider, custom ? customValue : selectedModel);
     if (accepted) setQuestion('');
   };
@@ -137,7 +143,7 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
         {t('empty', 'Ask where a feature is implemented, then follow up about its rules or full flow.')}
       </div>}
       {chat.session?.runs.map(run => <article key={run.id} className="space-y-3">
-        <p className="whitespace-pre-wrap rounded-xl bg-[var(--accent-primary)]/10 p-3 text-sm">{run.message}</p>
+        {run.kind !== 'compact' && <p className="whitespace-pre-wrap rounded-xl bg-[var(--accent-primary)]/10 p-3 text-sm">{run.message}</p>}
         <RunTimeline run={run} items={chat.activities[run.id]?.items ?? []} t={t} />
         {!!run.repos?.length && <details className="text-xs text-[var(--muted)]">
           <summary className="cursor-pointer">{t('runSource', 'Source used for this answer')} · {run.repos.length} {t('repositories', 'repositories')}</summary>
@@ -148,7 +154,7 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
           <span>{t(run.status, run.status)}</span><span>· {run.provider} / {run.model}</span>
         </div>
         {run.error && <p className="text-sm text-red-500">{run.error}</p>}
-        {run.id === lastRun?.id && !isActive(run.status) && run.status !== 'completed' &&
+        {run.id === latestAnalysis?.id && !running && run.status !== 'completed' &&
           <button className="btn-apple-secondary px-3 py-2 text-sm" disabled={chat.pending} onClick={() => void chat.control(run.id, 'resume', { provider: selectedProvider, model: custom ? customValue : selectedModel })}>{t('resume', 'Resume analysis')}</button>}
       </article>)}
     </div>
@@ -164,6 +170,19 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
       <div className="max-h-32 overflow-y-auto"><PlanList todos={currentPlan.todos} t={t} /></div>
     </aside>}
 
+    {chat.session && <aside aria-label={t('context', 'Context usage')} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border-color)] p-3 text-xs">
+      <div>
+        <span className="font-medium">{t('context', 'Context usage')}: </span>
+        {context ? <span>{context.source === 'estimated' ? '≈' : ''}{context.input_tokens.toLocaleString()} / {context.budget_tokens.toLocaleString()} tokens
+          {' · '}{Math.round(context.input_tokens / Math.max(1, context.budget_tokens) * 100)}%{' · '}
+          {context.source === 'estimated' ? t('estimatedContext', 'Estimate') : t('reportedContext', 'Last request reported by provider')}</span>
+          : <span>{t('contextPending', 'Available after the first model request')}</span>}
+        <p className="mt-1 text-[var(--muted)]">{t('compactHint', 'Stop analysis before compacting. Compaction preserves history and does not resume analysis.')}</p>
+      </div>
+      <button type="button" className="btn-apple-secondary px-3 py-2" disabled={!auth || chat.pending || running || !latestAnalysis}
+        onClick={() => void chat.compact(selectedProvider, custom ? customValue : selectedModel)}>{t('compact', 'Compact context')}</button>
+    </aside>}
+
     {!!chat.session?.documents.length && <aside className="rounded-xl border border-[var(--border-color)] p-3">
       <h3 className="mb-2 text-sm font-medium">{t('documents', 'Documents')}</h3>
       <div className="flex flex-wrap gap-2">{chat.session.documents.map(item => <button key={item.name} className="btn-apple-secondary px-3 py-2 text-xs" onClick={() => setActiveDocument(item.name)}>{item.name}</button>)}</div>
@@ -174,6 +193,9 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
     </aside>}
 
     <form onSubmit={send} className="space-y-2">
+      {!running && latestAnalysis && latestAnalysis.status !== 'completed' && <p className="text-xs text-[var(--muted)]">
+        {t('supplementHint', 'You can send corrections or new instructions here. Prior evidence stays in this conversation; Resume continues without changes.')}
+      </p>}
       <label className="sr-only" htmlFor={`agent-question-${isGlobalAsk ? 'global' : 'repo'}`}>{t('placeholder', 'Ask about this codebase…')}</label>
       <textarea id={`agent-question-${isGlobalAsk ? 'global' : 'repo'}`} value={question} onChange={event => setQuestion(event.target.value)}
         placeholder={t('placeholder', 'Ask about this codebase…')} rows={3} maxLength={16000}
@@ -181,8 +203,8 @@ export default function AgentChat({ repoInfo, provider = '', model = '', isCusto
         disabled={!auth || chat.pending} />
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-[var(--muted)]">{(chat.session || hasSelection) ? `${chat.session?.repos.length || (publicAccess ? publicAccess.selectedGroups.length : repos.length)} ${publicAccess && !chat.session ? '个分组' : t('repositories', 'repositories')} · ${custom ? customValue : selectedModel}` : publicAccess ? '请选择后台开放的分组。' : t('noRepos', 'Select an indexed repository first.')}</p>
-        {running && lastRun ? <button type="button" className="btn-apple-secondary px-4 py-2 text-sm" disabled={chat.pending} onClick={() => void chat.control(lastRun.id, 'cancel')}>{t('stop', 'Stop')}</button> :
-          <button type="submit" className="btn-apple px-4 py-2 text-sm disabled:opacity-40" disabled={!auth || !question.trim() || (!hasSelection && !chat.session) || chat.pending || unfinished}>{t('send', 'Send')}</button>}
+        {activeRun ? <button type="button" className="btn-apple-secondary px-4 py-2 text-sm" disabled={chat.pending} onClick={() => void chat.control(activeRun.id, 'cancel')}>{t('stop', 'Stop')}</button> :
+          <button type="submit" className="btn-apple px-4 py-2 text-sm disabled:opacity-40" disabled={!auth || !question.trim() || (!hasSelection && !chat.session) || chat.pending}>{t('send', 'Send')}</button>}
       </div>
     </form>
     {!publicAccess && <ModelSelectionModal isOpen={modelOpen} onClose={() => setModelOpen(false)} provider={selectedProvider} setProvider={setProvider}

@@ -28,6 +28,7 @@ from langgraph.errors import GraphRecursionError
 
 from .access import Access
 from .activity import public_input, tool_result
+from .context import ContextUsageMiddleware, ManagedSummarization, SnapshotBackend
 from .dsml import recover_dsml, stream_text
 from .models import build_model
 from .prompts import SYSTEM_PROMPT
@@ -69,9 +70,10 @@ def visible_text(text: str) -> str:
 class AnalysisBoundary(AgentMiddleware):
     """Expose registered tools and recover DSML before the agent decides its next step."""
 
-    def __init__(self, tool_names: set[str]):
+    def __init__(self, tool_names: set[str], authorize=None):
         super().__init__()
         self.tool_names = tool_names
+        self.authorize = authorize
 
     async def awrap_model_call(self, request, handler):
         tools = [
@@ -106,6 +108,8 @@ class AnalysisBoundary(AgentMiddleware):
         import json
 
         call = request.tool_call
+        if self.authorize:
+            await self.authorize()
         if (
             call["name"] not in self.tool_names
             or len(json.dumps(call.get("args", {}))) > 250_000
@@ -230,6 +234,11 @@ class Runtime:
         answer, last_emit, current_model_run = "", 0.0, None
         try:
             self.store.set_status(rid, "running")
+            if run.get("kind") == "compact":
+                async with asyncio.timeout(self.timeout):
+                    await self.compact_context(run, session, user, model)
+                self.store.set_status(rid, "completed")
+                return
             if repos is None:
                 async with asyncio.timeout(self.timeout):
                     repos = await self.access.refresh_readers(
@@ -353,7 +362,8 @@ class Runtime:
                 rid,
                 "interrupted",
                 answer=stream_text(visible_text(answer)),
-                error="Run time limit reached. Resume to continue.",
+                error=("Context compaction timed out. Original history is preserved; retry compaction."
+                       if run.get("kind") == "compact" else "Run time limit reached. Resume to continue."),
             )
         except HTTPException as exc:
             self.store.set_status(
@@ -385,7 +395,9 @@ class Runtime:
                 rid,
                 "failed",
                 answer=stream_text(visible_text(answer)),
-                error=f"Analysis failed ({type(exc).__name__}). Check model tool-calling support, provider availability and repository access, then resume.",
+                error=(f"Context compaction failed ({type(exc).__name__}). Original history is preserved; retry compaction."
+                       if run.get("kind") == "compact" else
+                       f"Analysis failed ({type(exc).__name__}). Check model tool-calling support, provider availability and repository access, then resume."),
             )
         finally:
             # Cancellation/errors can happen inside the stream throttle window.
@@ -416,6 +428,8 @@ class Runtime:
         wiki = WikiReader(reader, self.data_root, session["language"])
         tools = make_tools(reader, self.data_root, self.store, run, authorize, wiki=wiki)
         backend = StateBackend()
+        emit = lambda kind, data: self.store.event(run["id"], kind, data)
+        summarization = ManagedSummarization(model, backend, emit)
         revisions = "\n".join(f"- {repo.project} @ {repo.commit}" for repo in repos)
         if user.get("public_ask") and run.get("system_prompt", "").strip():
             prompt = (
@@ -433,12 +447,63 @@ class Runtime:
             backend=backend,
             system_prompt=prompt,
             middleware=[
-                # Deep Agents needs read_file internally for summarized state;
-                # AnalysisBoundary keeps it invisible to the model.
+                # Read only virtual history/offloaded results, never the server
+                # filesystem. Source remains behind the authorized source tools.
                 FilesystemMiddleware(backend=backend, tools=["read_file"]),
-                AnalysisBoundary({tool.name for tool in tools} | {"write_todos"}),
+                summarization,
+                AnalysisBoundary({tool.name for tool in tools} | {"write_todos", "read_file"}, authorize),
+                ContextUsageMiddleware(summarization, emit),
                 TodoListMiddleware(),
             ],
             checkpointer=self.checkpointer,
             name="deepwiki_ask",
         )
+
+    async def compact_context(self, run, session, user, model):
+        # Do not refresh/reindex source for a context-only operation.
+        repos = await self.access.readers(session["repos"], user)
+        graph = self.create_graph(run, session, repos, user, model)
+        config = {"configurable": {"thread_id": session["id"]}}
+        snapshot = await graph.aget_state(config)
+        def emit(kind, data):
+            if kind == "compaction":
+                data = {**data, "id": run["id"], "manual": True}
+            return self.store.event(run["id"], kind, data)
+
+        backend = SnapshotBackend(snapshot.values.get("files"))
+        summary = ManagedSummarization(model, backend, emit, manual=True)
+        effective = summary._apply_event_to_messages(
+            snapshot.values.get("messages", []), snapshot.values.get("_summarization_event")
+        )
+        previous = self.store.context_usage(session["id"]) or {}
+        overhead = previous.get("overhead_tokens", 0)
+        before = summary._count_tokens(effective, None, None) + overhead
+        update = await summary.compact_state(snapshot.values, config) if effective else None
+        if update is None:
+            emit("compaction", {"id": run["id"], "phase": "skipped", "manual": True})
+        else:
+            # Recheck scope after the model call; publication may have changed.
+            await self.access.check([r.project for r in repos], user)
+            # Updating private context fields can be ambiguous when several
+            # channels last changed together. Select the prior writer from the
+            # compiled graph, so compaction preserves the pending analysis step.
+            targets = set(snapshot.next) or {"__end__"}
+            diagram = graph.get_graph()
+            candidates = {edge.source for edge in diagram.edges
+                          if edge.target in targets and edge.source != "__start__"}
+            saved = await self.checkpointer.aget_tuple(snapshot.config)
+            seen = saved.checkpoint.get("versions_seen", {})
+            writer = max(candidates, key=lambda name: (
+                max((str(version) for version in seen.get(name, {}).values()), default=""),
+                name == "tools",
+            ))
+            await graph.aupdate_state(snapshot.config, update, as_node=writer)
+        effective = summary._apply_event_to_messages(
+            snapshot.values.get("messages", []),
+            update["_summarization_event"] if update else snapshot.values.get("_summarization_event"),
+        )
+        after = summary._count_tokens(effective, None, None) + overhead
+        emit("context", {"input_tokens": after, "budget_tokens": model.profile["max_input_tokens"],
+                         "source": "estimated", "overhead_tokens": overhead})
+        emit("compaction", {"id": run["id"], "phase": "completed" if update else "skipped",
+                            "manual": True, "before_tokens": before, "after_tokens": after})

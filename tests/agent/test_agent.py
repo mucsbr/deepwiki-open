@@ -980,7 +980,7 @@ def test_openai_compatible_streaming_tool_protocol(repository, wire_format):
                 and "execute" not in names
                 and "grep" not in names
                 and "glob" not in names
-                and "read_file" not in names
+                and "read_file" in names  # virtual compacted history only
             )
             if any(message["role"] == "tool" for message in body["messages"]):
                 delta = {"content": "Source confirmed."}

@@ -17,7 +17,7 @@ from api.agent.runtime import Runtime
 from api.agent.repositories import SourceReader
 from api.agent.tools import make_tools
 from api.public_ask import PublicAskGroup, PublicAskSettings, load_settings, save_settings
-from tests.agent.test_agent import repository
+from tests.agent.test_agent import repository, TestModel
 
 
 KEY_A, KEY_B = "a" * 64, "b" * 64
@@ -115,6 +115,27 @@ def test_private_conversations_are_not_visible_in_public_api(public_api):
     assert public_api.client.get(f"/api/public-agent/sessions/{private['id']}", headers=headers()).status_code == 404
 
 
+def test_public_compaction_enforces_ownership_scope_model_and_active_admission(public_api):
+    session = create(public_api)
+    initial = run(public_api, session).json()
+    path = f"/api/public-agent/sessions/{session['id']}/compact"
+    body = {"message": "compact", "request_id": str(uuid4()), "provider": "unapproved", "model": "expensive"}
+    assert public_api.client.post(path, headers=headers(KEY_B), json=body).status_code == 404
+    assert public_api.client.post(path, headers=headers(), json=body).status_code == 409
+    public_api.rt.store.set_status(initial["id"], "cancelled")
+    response = public_api.client.post(path, headers=headers(), json=body)
+    assert response.status_code == 202
+    assert response.json()["kind"] == "compact"
+    assert response.json()["model"] == "operator-model"
+    again = public_api.client.post(path, headers=headers(), json=body)
+    assert again.json()["id"] == response.json()["id"]
+    public_api.rt.store.set_status(response.json()["id"], "completed")
+    public_api.metadata[public_api.repo.project]["status"] = "unavailable"
+    save_settings(PublicAskSettings(revision=public_api.settings.revision, enabled=False))
+    body["request_id"] = str(uuid4())
+    assert public_api.client.post(path, headers=headers(), json=body).status_code == 403
+
+
 def test_prompt_is_snapshotted_and_public_model_is_operator_controlled(public_api):
     session = create(public_api, system_prompt="第一版 {json}")
     response = run(public_api, session, system_prompt="第二版 {answer: text}", provider="unapproved", model="expensive")
@@ -135,7 +156,7 @@ def test_custom_prompt_reaches_graph_without_formatting_user_braces(public_api, 
     captured = {}
     monkeypatch.setattr("api.agent.runtime.create_deep_agent", lambda **kwargs: captured.update(kwargs))
     user = scoped_user(session, {"public_ask": True, "visitor_owner": "fixture"})
-    public_api.rt.create_graph(entry, session, [public_api.repo], user, SimpleNamespace(profile={}))
+    public_api.rt.create_graph(entry, session, [public_api.repo], user, TestModel(responses=[]))
     assert '只输出 JSON {"answer": "text"}' in captured["system_prompt"]
     assert public_api.repo.commit in captured["system_prompt"]
     assert "private/secret" not in captured["system_prompt"]
