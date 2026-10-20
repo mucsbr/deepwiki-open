@@ -163,8 +163,12 @@ class Runtime:
         self.checkpointer = await self._checkpoint_context.__aenter__()
         await self.checkpointer.setup()
         self.store.recover()
+        if hasattr(self.access, "start"):
+            await self.access.start()
 
     async def close(self):
+        if hasattr(self.access, "close"):
+            await self.access.close()
         tasks = list(self.tasks.values())
         for task in tasks:
             task.cancel("shutdown")

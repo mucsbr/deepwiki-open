@@ -48,6 +48,7 @@ export function applyAgentEvent(state: RunActivity, event: AgentEvent): RunActiv
     next.items = next.items.map(item => item.kind === 'message' ? { ...item, done: true } : item);
     if (!isActive(data.status)) next.items = next.items.map(item => item.kind === 'tool' && !item.done ? { ...item, interrupted: true } : item);
     if (!isActive(data.status)) next.items = next.items.map(item => item.kind === 'compaction' && ['running', 'retrying'].includes(item.phase) ? { ...item, phase: 'interrupted' } : item);
+    if (!isActive(data.status)) next.items = next.items.map(item => item.kind === 'refresh' && ['checking', 'updating'].includes(item.phase) ? { ...item, phase: 'interrupted' } : item);
     if (data.status !== 'completed') next.items.push({ kind: 'status', id: `status-${event.id}`, status: data.status });
   }
   return next;

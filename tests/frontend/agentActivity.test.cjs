@@ -101,3 +101,16 @@ test('DSML-only empty message does not erase an earlier round', () => {
   ].reduce(applyAgentEvent, emptyActivity());
   assert.equal(state.items[0].content, 'Searching the selected repos.');
 });
+
+test('interrupted legacy refreshes stop spinning while background jobs remain independent', () => {
+  const state = [
+    event(1, 'status', { status: 'running' }),
+    event(2, 'refresh', { repo: 'group/old', phase: 'updating' }),
+    event(3, 'refresh', { repo: 'group/new', phase: 'background' }),
+    event(4, 'status', { status: 'interrupted' }),
+    event(5, 'status', { status: 'running' }),
+    event(6, 'refresh', { repo: 'group/old', phase: 'cached' }),
+  ].reduce(applyAgentEvent, emptyActivity());
+  const refreshes = state.items.filter(item => item.kind === 'refresh');
+  assert.deepEqual(refreshes.map(item => item.phase), ['interrupted', 'background', 'cached']);
+});

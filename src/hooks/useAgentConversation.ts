@@ -61,7 +61,7 @@ export function useAgentConversation(token: AgentAuth | null, publicSettings?: {
               }),
             });
           }
-          if (event.type === 'refresh' && event.data.repo !== undefined && event.data.phase)
+          if (event.type === 'refresh' && event.data.repo !== undefined && event.data.phase && ['checking', 'updating'].includes(event.data.phase))
             setRefresh({ repo: event.data.repo, phase: event.data.phase });
           if (event.type === 'source_scope' && event.data.repos)
             setSession(previous => previous?.id !== sid ? previous : {

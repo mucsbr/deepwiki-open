@@ -111,55 +111,35 @@ def test_create_scope_names_all_repositories_without_commits(tmp_path, monkeypat
     assert error.value.detail.count("no readable HEAD commit") == 2
 
 
-def test_refresh_checks_remote_and_reindexes_only_when_changed(repository, monkeypatch):
-    from dataclasses import replace
-
+def test_refresh_uses_available_source_without_waiting_for_gitlab(repository, monkeypatch):
     from api.agent.access import Access
     from api.batch_indexer import BatchIndexer
 
     root, repo = repository
-    index_path = root / "databases" / "group_demo.pkl"
-    index_path.parent.mkdir()
-    index_path.write_bytes(b"existing index")
-    state = {"local": repo.commit, "remote": repo.commit, "reindexes": 0}
     access = Access(root)
 
     async def allowed(_projects, _user):
         return None
 
     async def versions(_projects, _user):
-        return {repo.project: {
-            "commit": state["remote"],
-            "id": 1,
-            "last_activity_at": "now",
-            "http_url_to_repo": repo.url + ".git",
-        }}
-
-    def resolve(_project, _host, _root):
-        return replace(repo, commit=state["local"])
+        pytest.fail("GitLab checks must not run on the answer's critical path")
 
     async def reindex(_self, project, **_kwargs):
-        assert project["path_with_namespace"] == repo.project
-        assert _self.service_token == "fixture-service-token"
-        state["reindexes"] += 1
-        state["local"] = state["remote"]
-        return True
+        pytest.fail("Index updates must not run on the answer's critical path")
 
     monkeypatch.setattr("api.config.GITLAB_URL", "https://gitlab.example")
     monkeypatch.setattr("api.config.GITLAB_SERVICE_TOKEN", "fixture-service-token")
     monkeypatch.setattr(access, "check", allowed)
     monkeypatch.setattr(access, "remote_versions", versions)
-    monkeypatch.setattr("api.agent.access.resolve_repository", resolve)
     monkeypatch.setattr(BatchIndexer, "reindex_project", reindex)
     scope = [repo.public()]
     user = {"gitlab_access_token": "fixture-token"}
     assert asyncio.run(access.refresh_readers(scope, user))[0].commit == repo.commit
-    assert state["reindexes"] == 0
-
-    state["remote"] = "b" * 40
+    job = access.updates.get(repo.project)
+    assert job["status"] == "queued"
     refreshed = asyncio.run(access.refresh_readers(scope, user))
-    assert refreshed[0].commit == state["remote"]
-    assert state["reindexes"] == 1
+    assert refreshed[0].commit == repo.commit
+    assert access.updates.get(repo.project)["job_id"] == job["job_id"]
 
 
 def test_remote_revision_check_uses_gitlab_branch_and_user_token(tmp_path, monkeypatch):

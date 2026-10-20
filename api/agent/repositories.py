@@ -88,9 +88,13 @@ class Repository:
     url: str
     commit: str
     root: Path
+    index_snapshot: str | None = None
 
     def public(self) -> dict:
-        return {"project": self.project, "url": self.url, "commit": self.commit}
+        result = {"project": self.project, "url": self.url, "commit": self.commit}
+        if self.index_snapshot:
+            result["index_snapshot"] = self.index_snapshot
+        return result
 
 
 def resolve_repository(
@@ -315,7 +319,8 @@ class IndexSearch:
             for name in projects:
                 repo = self.reader.repository(name)
                 filename = repo.root.name + ".pkl"
-                path = self.data_root / "databases" / filename
+                path = (self.data_root / "databases" / "ask-snapshots" / repo.root.name / repo.index_snapshot
+                        if repo.index_snapshot else self.data_root / "databases" / filename)
                 if not path.is_file() or path.is_symlink():
                     coverage.append(
                         {"repo": name, "index_available": False, "indexed_chunks": 0}

@@ -165,10 +165,34 @@ class BatchIndexer:
         on_progress: Optional[Callable[[dict], None]] = None,
         force: bool = False,
     ) -> bool:
+        from adalflow.utils import get_adalflow_default_root_path
+        from api.repository_lock import repository_write_lock
+
+        # Cancelling an asyncio waiter cannot stop its executor thread. Retain
+        # the writer lock through publication AND metadata reconciliation. A
+        # caller still waiting for the lock can be cancelled without doing work.
+        async with repository_write_lock(
+            Path(get_adalflow_default_root_path()), project.get("path_with_namespace", "")
+        ):
+            task = asyncio.create_task(self._reindex_project_locked(project, on_progress, force))
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        continue
+                task.result()
+                raise
+
+    async def _reindex_project_locked(
+        self, project: dict, on_progress=None, force: bool = False,
+    ) -> bool:
         """
         Only do vectorisation: clone/pull -> embedding -> save pkl + metadata.
 
-        Does **not** generate wiki cache.
+        Caller must hold repository_write_lock. Does not generate wiki cache.
         """
         from api.data_pipeline import DatabaseManager
         from api.metadata_store import set_project_metadata

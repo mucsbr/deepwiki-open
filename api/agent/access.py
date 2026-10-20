@@ -1,13 +1,17 @@
 """Bridge existing GitLab authorization into every agent conversation."""
 
 import asyncio
+import logging
 from pathlib import Path
 from urllib.parse import quote
 
 import httpx
 from fastapi import HTTPException, Request
 
-from .repositories import project_path, resolve_repository
+from .repositories import project_path
+from .snapshots import available_repository
+
+logger = logging.getLogger(__name__)
 
 
 async def current_user(request: Request) -> dict:
@@ -36,8 +40,16 @@ def scoped_user(session: dict, user: dict) -> dict:
 
 class Access:
     def __init__(self, data_root: Path):
+        from api.ask_updates import AskUpdateQueue
+
         self.data_root = data_root
-        self._refresh_locks: dict[str, asyncio.Lock] = {}
+        self.updates = AskUpdateQueue(data_root)
+
+    async def start(self):
+        await self.updates.start()
+
+    async def close(self):
+        await self.updates.close()
 
     async def check(self, projects: list[str], user: dict):
         if user.get("public_ask"):
@@ -82,7 +94,7 @@ class Access:
         not_indexed = [
             project
             for project in projects
-            if metadata.get(project, {}).get("status") not in {"indexed", "partial"}
+            if metadata.get(project, {}).get("status") not in {"indexed", "partial", "indexing", "error"}
         ]
         if not_indexed:
             raise HTTPException(
@@ -93,9 +105,10 @@ class Access:
             repos, failures = [], []
             for project in projects:
                 try:
-                    repos.append(
-                        resolve_repository(project, GITLAB_URL, self.data_root).public()
-                    )
+                    repo = available_repository(project, GITLAB_URL, self.data_root)
+                    if metadata[project]["status"] in {"indexing", "error"} and not repo.index_snapshot:
+                        raise ValueError(f"{project}: no previously published index is available.")
+                    repos.append(repo.public())
                 except ValueError as exc:
                     failures.append(str(exc))
             if failures:
@@ -119,8 +132,9 @@ class Access:
         try:
             return await asyncio.to_thread(
                 lambda: [
-                    resolve_repository(
-                        r["project"], GITLAB_URL, self.data_root, r["commit"]
+                    available_repository(
+                        r["project"], GITLAB_URL, self.data_root,
+                        commit=r["commit"], snapshot=r.get("index_snapshot"),
                     )
                     for r in scope
                 ]
@@ -206,68 +220,24 @@ class Access:
             return dict(await asyncio.gather(*(get_version(name) for name in projects)))
 
     async def refresh_readers(self, scope: list[dict], user: dict, on_progress=None):
-        """Refresh changed selected repos and their indexes before a new question."""
-        from api.batch_indexer import BatchIndexer
+        """Read locally available source now; queue daily network work separately."""
         from api.config import GITLAB_SERVICE_TOKEN, GITLAB_URL
 
         projects = [item["project"] for item in scope]
         await self.check(projects, user)
+        try:
+            readers = await asyncio.to_thread(lambda: [
+                available_repository(name, GITLAB_URL, self.data_root) for name in projects
+            ])
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        phases = {name: "local" for name in projects}
+        if GITLAB_SERVICE_TOKEN:
+            try:
+                phases = await asyncio.to_thread(self.updates.request, projects)
+            except Exception as exc:
+                logger.warning("Could not schedule Ask repository updates (%s)", type(exc).__name__)
         if on_progress:
-            on_progress("", "checking")
-        remote = await self.remote_versions(projects, user)
-        readers = []
-        for name in projects:
-            async with self._refresh_locks.setdefault(name, asyncio.Lock()):
-                if on_progress:
-                    on_progress(name, "checking")
-                try:
-                    current = await asyncio.to_thread(
-                        resolve_repository, name, GITLAB_URL, self.data_root
-                    )
-                except ValueError:
-                    current = None
-                index_path = (
-                    self.data_root / "databases" / f"{name.replace('/', '_')}.pkl"
-                )
-                expected = remote[name]["commit"]
-                if (
-                    current is None
-                    or current.commit != expected
-                    or not index_path.is_file()
-                ):
-                    if on_progress:
-                        on_progress(name, "updating")
-                    if not GITLAB_SERVICE_TOKEN:
-                        raise HTTPException(
-                            503, "Configure GitLab service token to refresh code."
-                        )
-                    indexer = BatchIndexer(GITLAB_URL, GITLAB_SERVICE_TOKEN, [])
-                    project = {
-                        "path_with_namespace": name,
-                        **{
-                            key: value
-                            for key, value in remote[name].items()
-                            if key != "commit"
-                        },
-                    }
-                    success = await indexer.reindex_project(project)
-                    if not success:
-                        raise HTTPException(
-                            409, f"Could not update code and index for {name}."
-                        )
-                    try:
-                        current = await asyncio.to_thread(
-                            resolve_repository, name, GITLAB_URL, self.data_root
-                        )
-                    except ValueError as exc:
-                        raise HTTPException(
-                            409, f"Updated clone for {name} is unreadable: {exc}"
-                        ) from exc
-                    if current.commit != expected:
-                        raise HTTPException(
-                            409, f"{name} changed while refreshing. Retry this question."
-                        )
-                readers.append(current)
-                if on_progress:
-                    on_progress(name, "ready")
+            for name, phase in phases.items():
+                on_progress(name, phase)
         return readers

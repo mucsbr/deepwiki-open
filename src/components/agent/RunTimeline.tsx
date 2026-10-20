@@ -70,7 +70,11 @@ export default function RunTimeline({ run, items, t }: { run: AgentRun; items: A
         <PlanList todos={item.todos} t={t} />
       </details>;
       if (item.kind === 'refresh') return <p key={item.id} className="break-words text-xs text-[var(--muted)]">
-        {item.phase === 'ready' ? '✓' : '↻'} {item.repo} · {item.phase === 'ready' ? t('codeReady', 'Code and index ready')
+        {['ready', 'cached', 'background', 'local'].includes(item.phase) ? '✓' : item.phase === 'interrupted' ? '−' : '↻'} {item.repo} · {item.phase === 'background' ? t('backgroundCodeUpdate', 'Using available code; background update queued or running')
+          : item.phase === 'cached' ? t('cachedCodeReady', 'Using available code; daily update check already requested')
+          : item.phase === 'local' ? t('backgroundCodeUnavailable', 'Using available code; background updates are unavailable')
+          : item.phase === 'interrupted' ? t('interrupted', 'Interrupted')
+          : item.phase === 'ready' ? t('codeReady', 'Code and index ready')
           : item.phase === 'updating' ? t('updatingCode', 'Updating code and index') : t('checkingCode', 'Checking GitLab for new code')}
       </p>;
       if (item.kind === 'status' && !isActive(item.status)) return <p key={item.id} className="text-xs text-[var(--muted)]">{t(item.status, item.status)}</p>;
